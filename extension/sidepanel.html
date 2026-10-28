@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>pixelPerfect</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <header>
+    <h1>pixelPerfect</h1>
+    <span id="status" class="status">Not configured</span>
+  </header>
+
+  <details id="settings">
+    <summary>Settings</summary>
+    <label>Meta API key <input id="apiKey" type="password" autocomplete="off"></label>
+    <label>Model <input id="model" value="muse-spark-1.1"></label>
+    <label>API base URL <input id="baseUrl" value="https://api.meta.ai/v1"></label>
+    <div class="row">
+      <button id="save">Save</button>
+      <button id="test" class="secondary">Test connection</button>
+    </div>
+  </details>
+
+  <section class="pick">
+    <button id="pick">Pick an element</button>
+    <div id="selection" class="selection" hidden></div>
+  </section>
+
+  <section class="ask">
+    <textarea id="goal" rows="3" placeholder="What's wrong? e.g. &quot;this button should be centered in the card&quot;"></textarea>
+    <button id="run" disabled>Fix it</button>
+  </section>
+
+  <section>
+    <h2>Agent trace</h2>
+    <ol id="trace" class="trace"></ol>
+  </section>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>
