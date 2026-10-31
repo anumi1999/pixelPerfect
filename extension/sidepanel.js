@@ -1,7 +1,7 @@
 import { runAgent, callMuseSpark } from './agent.js';
 import { configureBridge, bridgeRequest } from './bridge.js';
 import { state, resetRun } from './state.js';
-import { loadFigma, figmaSummary } from './figma.js';
+import { loadFigma, figmaSummary, useDesign, parseFigmaUrl } from './figma.js';
 import { sourceStatus } from './tools.js';
 
 const $ = (id) => document.getElementById(id);
@@ -60,7 +60,7 @@ function updateLastTurn(outcome, kind) {
 }
 
 function resetRunView() {
-  Object.assign(run, { previewed: false, firstFailing: null, lastVerify: null, responsive: null, answer: '', verified: false });
+  Object.assign(run, { previewed: false, firstFailing: null, lastVerify: null, responsive: null, answer: '', verified: false, previews: [] });
   for (const id of ['causeBlock', 'previewCard', 'checksCard', 'diffCard', 'actionBar', 'applied']) $(id).hidden = true;
   $('shotBefore').removeAttribute('src');
   $('shotAfter').removeAttribute('src');
@@ -86,20 +86,43 @@ function settingsStatus(text, kind = '') {
   $('settingsStatus').style.color = kind === 'bad' ? 'var(--bad)' : kind === 'ok' ? 'var(--ok)' : '';
 }
 
-async function loadDesign() {
+// Figma's API allows only a few calls per month on some plans, so the design is cached and
+// only fetched again when you click "Load Figma".
+const cacheKey = (url) => { try { const { fileKey, nodeId } = parseFigmaUrl(url); return `figmaCache:${fileKey}:${nodeId || 'file'}`; } catch { return null; } };
+
+async function loadDesign({ fresh = false } = {}) {
   const url = $('figmaUrl').value.trim();
   if (!url) return;
+  const key = cacheKey(url);
+  if (!fresh && key) {
+    const cached = (await chrome.storage.local.get(key))[key];
+    if (cached?.root) {
+      const s = useDesign(cached);
+      $('figmaStatus').textContent = `Figma: "${s.name}", ${s.components} components (saved ${new Date(cached.savedAt).toLocaleString()}). Click Load Figma to fetch changes.`;
+      return;
+    }
+  }
   $('figmaStatus').textContent = 'Loading Figma design…';
   try {
     const s = await loadFigma({ url, token: $('figmaToken').value.trim() });
     $('figmaStatus').textContent = `Figma: "${s.name}" loaded, ${s.components} components`;
+    if (key) {
+      try { await chrome.storage.local.set({ [key]: { ...s.raw, savedAt: Date.now() } }); }
+      catch (err) { addTrace('fail', 'Could not cache the Figma design', err.message); }
+    }
   } catch (err) {
-    $('figmaStatus').textContent = `Figma design not loaded: ${err.message}`;
+    const cached = key && (await chrome.storage.local.get(key))[key];
+    if (cached?.root) {
+      const s = useDesign(cached);
+      $('figmaStatus').textContent = `${err.message} Using the copy saved ${new Date(cached.savedAt).toLocaleString()} ("${s.name}", ${s.components} components).`;
+    } else {
+      $('figmaStatus').textContent = `Figma design not loaded: ${err.message}`;
+    }
   }
 }
 $('loadFigma').addEventListener('click', async () => {
   await chrome.storage.local.set({ figmaUrl: $('figmaUrl').value.trim(), figmaToken: $('figmaToken').value.trim() });
-  await loadDesign();
+  await loadDesign({ fresh: true });
 });
 
 function applyBridgeSettings() {
@@ -319,7 +342,7 @@ $('run').addEventListener('click', async () => {
         addTrace('fail', 'Local model could not verify a fix', 'Discarding its previews and escalating to Muse Spark (cloud). Details of the selected elements will be sent to the Meta Model API.');
         await sendToPage({ type: 'PP_DISCARD' });
         resetRun();
-        Object.assign(run, { previewed: false, firstFailing: null, lastVerify: null, responsive: null });
+        Object.assign(run, { previewed: false, firstFailing: null, lastVerify: null, responsive: null, previews: [] });
         outcome = await runWith('cloud', goal);
       } else {
         addTrace('fail', 'Local model could not verify a fix', 'Cloud escalation is off. Allow it in Settings, or switch to Cloud mode.');
@@ -380,6 +403,7 @@ async function showResult() {
 
   // Code change (diff) and action bar.
   renderEdits(edits);
+  $('copyCss').hidden = !(hasChanges && previewCssText());
   const source = hasChanges && !edits.length ? await sourceStatus(tabId) : null;
   $('applyCode').disabled = !edits.length;
   $('applyNote').textContent = edits.length
@@ -457,6 +481,7 @@ function checkItems(result) {
     else if (r.type === 'contrast') label = `Contrast: ${String(r.actual).replace(':1', '')}:1`;
     else if (r.type === 'spacing') label = `Spacing: ${r.expected}`;
     else if (r.type === 'size') label = `Size`;
+    else if (r.type === 'lines') label = `${who}One line`;
     else label = `${who}${TYPE_LABEL[r.type] || humanize(r.type || 'Check')}`;
     items.push({ label, pass: !!r.pass });
   }
@@ -600,6 +625,35 @@ function renderEdits(edits) {
   }));
 }
 
+// The previewed CSS as rules you can paste: inline previews get a selector for their element,
+// and the !important used only for previewing is removed.
+function selectorFor(e) {
+  if (!e) return '/* selected element */';
+  if (e.id) return `#${CSS.escape(e.id)}`;
+  return e.tag + (e.classes || []).map((c) => `.${CSS.escape(c)}`).join('');
+}
+function previewCssText() {
+  const parts = (run.previews || []).map((p) => {
+    const css = p.css.replace(/\s*!important/gi, '').trim();
+    if (!css) return '';
+    if (p.element === undefined) return css;
+    const decls = css.split(';').map((d) => d.trim()).filter(Boolean).map((d) => `  ${d};`).join('\n');
+    return `${selectorFor(elements[p.element])} {\n${decls}\n}`;
+  }).filter(Boolean);
+  return parts.length ? `/* pixelPerfect preview (${run.verified ? 'verified' : 'NOT verified'}), ${new Date().toLocaleString()} */\n${parts.join('\n\n')}\n` : '';
+}
+$('copyCss').addEventListener('click', async () => {
+  const text = previewCssText();
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    $('copyCss').querySelector('span').textContent = 'Copied ✓';
+    setTimeout(() => { $('copyCss').querySelector('span').textContent = 'Copy CSS'; }, 1600);
+  } catch (err) {
+    addTrace('error', 'Could not copy', err.message);
+  }
+});
+
 $('toggleDiff').addEventListener('click', () => {
   const open = $('diffCard').hidden;
   $('diffCard').hidden = !open;
@@ -707,6 +761,13 @@ function onStep(s) {
     if (s.result.allPass && !s.result.checksChanged && lastArgs.verify?.checks) state.lastPassingChecks = lastArgs.verify.checks;
   }
   if (s.kind === 'result' && s.name === 'verify_responsive' && s.result?.byWidth) run.responsive = s.result;
+  // Mirror the previews on the page, so "Copy CSS" gives exactly what is applied now.
+  if (s.kind === 'result' && !s.result?.error) {
+    run.previews ||= [];
+    if (s.name === 'preview_stylesheet') run.previews.push({ css: lastArgs.preview_stylesheet?.css || '' });
+    if (s.name === 'preview_css') run.previews.push({ css: lastArgs.preview_css?.css || '', element: lastArgs.preview_css?.element ?? 0 });
+    if (s.name === 'undo_preview' && /Reverted/.test(s.result?.message || '')) run.previews.pop();
+  }
   if (s.kind === 'result' && s.result?.checksChanged) {
     addTrace('fail', 'Doesn\'t count: the agent changed the original checks', s.result.checksChanged.join('\n'));
   }

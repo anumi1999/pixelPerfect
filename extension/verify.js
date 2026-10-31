@@ -10,6 +10,7 @@
 //   aligned   { edge: top|bottom|left|right|center-x|center-y, tolerance_px? }  children share an edge
 //   visible   {}                                              shown, has size, in view, not covered
 //   no_overflow {}                                            content not cut off, element fits its parent
+//   lines     { expected, min_viewport? }                     text wraps onto at most `expected` lines (skipped below min_viewport px)
 //   contrast  { min_ratio? }                                  text contrast (WCAG), default 4.5 / 3 for large text
 // Any check may add `target: { text }` or `target: { selector }` to check a descendant of the selected element.
 (() => {
@@ -26,10 +27,14 @@
       return { el, label: target.selector };
     }
     if (target.text) {
-      const want = target.text.trim().toLowerCase();
+      // Compared loosely: case, spacing, quotes, arrows and other symbols ignored (Figma often has "View ↗"
+      // where the page draws the arrow as an icon).
+      const loose = (s) => String(s).toLowerCase().replace(/[^\p{L}\p{N}%$.,]+/gu, ' ').replace(/\s+/g, ' ').trim();
+      const want = loose(target.text);
+      if (!want) return { el: null, label: `"${target.text}"` };
       // Deepest element whose own text contains the wanted text.
-      const all = [root, ...root.querySelectorAll('*')].filter((e) => (e.innerText || '').trim().toLowerCase().includes(want));
-      const el = all.find((e) => ![...e.children].some((c) => (c.innerText || '').trim().toLowerCase().includes(want))) || all[0] || null;
+      const all = [root, ...root.querySelectorAll('*')].filter((e) => loose(e.innerText || e.textContent || '').includes(want));
+      const el = all.find((e) => ![...e.children].some((c) => loose(c.innerText || c.textContent || '').includes(want))) || all[0] || null;
       return { el, label: `"${target.text}"` };
     }
     return { el: root, label: 'selected element' };
@@ -225,6 +230,22 @@
         }
       }
       return { pass: problems.length === 0, expected: 'visible and clickable', actual: problems.length ? problems : 'visible', summary: problems.length ? `visible: ${problems.join(', ')}` : 'visible: shown, in view, not covered' };
+    },
+
+    lines(el, c) {
+      const want = Math.max(1, Math.round(num(c.expected) || 1));
+      if (c.min_viewport && innerWidth < c.min_viewport) {
+        return { pass: true, expected: `≤ ${want} line(s)`, actual: 'skipped', summary: `lines: not checked below ${c.min_viewport}px (screen is ${innerWidth}px)` };
+      }
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const tops = [];
+      for (const r of range.getClientRects()) {
+        if (r.width < 1 || r.height < 1) continue;
+        if (!tops.some((t) => Math.abs(t - r.top) < Math.max(3, r.height / 2))) tops.push(r.top);
+      }
+      const n = tops.length || 1;
+      return { pass: n <= want, expected: `≤ ${want} line(s)`, actual: n, summary: `lines: expected ≤ ${want}, actual ${n}` };
     },
 
     no_overflow(el) {

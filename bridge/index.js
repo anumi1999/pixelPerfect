@@ -73,13 +73,40 @@ function diffPreview(text, find, replace) {
   let first = start;
   while (oldSeg.length && newSeg.length && oldSeg[0] === newSeg[0]) { oldSeg = oldSeg.slice(1); newSeg = newSeg.slice(1); first++; }
   while (oldSeg.length && newSeg.length && oldSeg.at(-1) === newSeg.at(-1)) { oldSeg = oldSeg.slice(0, -1); newSeg = newSeg.slice(0, -1); }
+  // Long (e.g. minified) lines: show only the part that changed, with a little context.
+  if (oldSeg.length === 1 && newSeg.length === 1 && Math.max(oldSeg[0].length, newSeg[0].length) > 160) {
+    [oldSeg[0], newSeg[0]] = changedPart(oldSeg[0], newSeg[0]);
+  }
+  const ctx = (l) => (l.length > 120 ? l.slice(0, 117) + '…' : l);
   const out = [];
-  if (first > 1) out.push(`  ${first - 1} ${oldLines[first - 2]}`);
+  if (first > 1) out.push(`  ${first - 1} ${ctx(oldLines[first - 2])}`);
   oldSeg.forEach((l, k) => out.push(`- ${first + k} ${l}`));
   newSeg.forEach((l) => out.push(`+   ${l}`));
   const after = first + oldSeg.length;
-  if (oldLines[after - 1] !== undefined) out.push(`  ${after} ${oldLines[after - 1]}`);
+  if (oldLines[after - 1] !== undefined) out.push(`  ${after} ${ctx(oldLines[after - 1])}`);
   return out.join('\n');
+}
+
+function changedPart(a, b, context = 40) {
+  let p = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p++;
+  let s = 0;
+  while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
+  const from = Math.max(0, p - context);
+  const cut = (t) => {
+    const to = Math.min(t.length, t.length - s + context);
+    return (from > 0 ? '…' : '') + t.slice(from, to) + (to < t.length ? '…' : '');
+  };
+  return [cut(a), cut(b)];
+}
+
+// The file as it will be once earlier proposed edits (same file) are applied.
+function withPrior(text, prior = []) {
+  for (const e of prior) {
+    if (count(text, e.find) !== 1) throw new Error('An earlier proposed edit to this file no longer applies. Withdraw it and propose again.');
+    text = text.replace(e.find, () => e.replace);
+  }
+  return text;
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────
@@ -121,13 +148,17 @@ const actions = {
   },
 
   // Check that an edit would apply cleanly (the text to replace appears exactly once). Writes nothing.
-  async check_edit({ file, find, replace }) {
+  // `prior`: edits already proposed for this file; the new edit is checked against the file with them applied.
+  async check_edit({ file, find, replace, prior = [] }) {
     const { abs, rel } = resolveInRoot(file);
     if (typeof find !== 'string' || !find) throw new Error('"find" must be the exact text to replace.');
     if (typeof replace !== 'string') throw new Error('"replace" must be a string (use "" to delete).');
-    const text = await readText(abs);
+    let text = await readText(abs);
+    try { text = withPrior(text, prior); } catch (err) { return { ok: false, file: rel, error: err.message }; }
     const n = count(text, find);
-    if (n === 0) return { ok: false, file: rel, error: 'The "find" text does not appear in the file. Copy it exactly from read_file, without line numbers.' };
+    if (n === 0) return { ok: false, file: rel, error: prior.length
+      ? 'The "find" text does not appear in the file once your earlier proposed edits to it are applied (they may already have changed this text). Propose against the file as it will be, or withdraw the earlier edit.'
+      : 'The "find" text does not appear in the file. Copy it exactly from read_file, without line numbers.' };
     if (n > 1) return { ok: false, file: rel, error: `The "find" text appears ${n} times. Include more surrounding lines so it is unique.` };
     return { ok: true, file: rel, line: lineOf(text, text.indexOf(find)), diff: diffPreview(text, find, replace) };
   },

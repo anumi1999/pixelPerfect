@@ -187,6 +187,7 @@ textarea::placeholder { color: var(--faint); }
 
 /* ── Action bar ─────────────────────────────────────────── */
 .action-bar { display: grid; grid-template-columns: 1fr 1.7fr auto; gap: 8px; }
+.action-bar:has(#copyCss:not([hidden])) { grid-template-columns: 1fr 1.4fr auto auto; }
 .btn.apply { background: linear-gradient(90deg, #5b5cff, #a855f7 55%, var(--magenta)); border-color: transparent; color: #fff; font-size: 14px; padding: 11px 14px; box-shadow: 0 6px 24px -8px rgba(168, 85, 247, .7); }
 .action-bar .btn.ghost { padding: 11px 12px; }
 

@@ -10,7 +10,7 @@ const CHECK_SCHEMA = {
   properties: {
     type: {
       type: 'string',
-      enum: ['css', 'centered', 'size', 'spacing', 'aligned', 'visible', 'no_overflow', 'contrast'],
+      enum: ['css', 'centered', 'size', 'spacing', 'aligned', 'visible', 'no_overflow', 'contrast', 'lines'],
       description: [
         'css: a computed style equals `expected` (needs property, expected).',
         'centered: equal gaps on both sides. `of`="self" centers the element in its parent; `of`="children" centers its children as one group inside it (they must also sit together, unless grouped=false). `axis` = horizontal | vertical | both.',
@@ -18,12 +18,14 @@ const CHECK_SCHEMA = {
         'spacing: gaps between the element\'s children are equal, or equal to expected_px.',
         'aligned: the element\'s children share an edge (top, bottom, left, right, center-x, center-y).',
         'visible: shown, non-zero size, in the viewport and not covered by another element.',
+        'lines: the text wraps onto at most `expected` lines (e.g. a one-line heading). Optional min_viewport: skip on narrower screens.',
         'no_overflow: content is not cut off or spilling, and the element fits inside its parent.',
         'contrast: text contrast meets WCAG (default 4.5:1, or 3:1 for large text).'
       ].join(' ')
     },
     property: { type: 'string', description: 'css only: CSS property name, e.g. "font-weight"' },
-    expected: { type: 'string', description: 'css only: expected value, e.g. "600", "24px", "#4F46E5", "center"' },
+    expected: { type: 'string', description: 'css: expected value, e.g. "600", "24px", "#4F46E5", "center". lines: the maximum number of lines, e.g. "1".' },
+    min_viewport: { type: 'number', description: 'lines only: skip this check when the screen is narrower than this (px).' },
     axis: { type: 'string', enum: ['horizontal', 'vertical', 'both'] },
     of: { type: 'string', enum: ['self', 'children'] },
     grouped: { type: 'boolean', description: 'centered of=children only: require children to sit together (default true)' },
@@ -179,7 +181,10 @@ async function proposeEdit({ file, find, replace, reason }) {
   const problems = lintEdit(find || '', replace || '');
   if (problems.length) return { error: `Not proposed: the change ${problems.join(' and ')}. Rewrite it: change the rule that causes the problem, use stable selectors from the source, and no !important.` };
   let check;
-  try { check = await bridgeRequest('check_edit', { file, find, replace }); }
+  const prior = state.pendingEdits
+    .filter((e) => (e.file === file || file.endsWith('/' + e.file)) && e.find !== find)
+    .map(({ find: f, replace: r }) => ({ find: f, replace: r }));
+  try { check = await bridgeRequest('check_edit', { file, find, replace, prior }); }
   catch (err) { return { error: err.message }; }
   if (!check.ok) return { error: check.error, file: check.file };
   const edit = { file: check.file, find, replace, reason: reason || '', line: check.line, diff: check.diff };

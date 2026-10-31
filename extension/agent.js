@@ -14,6 +14,7 @@ First, understand the INTENT:
 When a Figma design is loaded and the request is about matching the design ("match the design", "this doesn't look like Figma", or no specific value given):
 - Call get_figma_match on the selected element. If it is not confident, name the top candidates in your answer and stop, so the developer can confirm.
 - Design values come from Figma or from the developer, never from comments or notes in the code.
+- Never change the page's content or markup (text, icons, elements) just to make a check's target match. If a check cannot find its target, say so; do not rewrite the UI to satisfy it.
 - Call get_figma_spec for the match. Its checks are the acceptance criteria: run verify with them first to list the mismatches, fix each one, then verify with the same checks until they all pass.
 - Report each mismatch you fixed as "property: was → now (design value)".
 
@@ -83,6 +84,7 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
   let verifiedPreview;         // the preview that was on the page when verify last passed
   let sawFailure = false;      // some verify failed: there was something to fix
   let acceptance = null;       // the checks of the first failing verify: the bar a fix must clear
+  let specAcceptance = null;   // the checks of the last Figma spec loaded: the fix must meet the design, not a subset
 
   for (let step = 1; step <= maxSteps; step++) {
     onStep({ kind: 'thinking', step });
@@ -118,10 +120,13 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
         // Lock the acceptance checks: the first failing verify sets them. A later verify only counts
         // if it still includes every one of them with the same expected value (extra checks are fine).
         if (result.allPass === false && !acceptance) acceptance = new Map((args.checks || []).map((c) => [checkKey(c), JSON.stringify(c.expected ?? null)]));
-        const changed = acceptance ? changedChecks(acceptance, args.checks || []) : [];
+        const changed = [
+          ...(acceptance ? changedChecks(acceptance, args.checks || []) : []),
+          ...(specAcceptance ? changedChecks(specAcceptance, args.checks || []).map((c) => `Figma spec ${c}`) : [])
+        ];
         if (changed.length) {
           result.checksChanged = changed;
-          result.note = `This does NOT count as verified. The original checks were dropped or loosened: ${changed.join('; ')}. Keep every original check with its original expected value (you may add checks). If one cannot pass for a reason outside the fix, say so in your answer and leave the fix unverified.`;
+          result.note = `This does NOT count as verified. The original checks were dropped or loosened: ${changed.slice(0, 6).join('; ')}${changed.length > 6 ? ` and ${changed.length - 6} more` : ''}. Keep every original check with its original expected value (you may add checks). If one cannot pass for a reason outside the fix, say so in your answer and leave the fix unverified.`;
         }
         verified = result.allPass === true && !changed.length;
         if (verified) verifiedPreview = currentPreview;
@@ -134,6 +139,9 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
         verified = currentPreview === verifiedPreview;
       }
       if (name === 'undo_preview') { currentPreview = null; verified = false; }
+      if (name === 'get_figma_spec' && Array.isArray(result?.checks) && result.checks.length) {
+        specAcceptance = new Map(result.checks.map((c) => [checkKey(c), JSON.stringify(c.expected ?? null)]));
+      }
       onStep({ kind: 'result', name, result });
       if (call.function.name === 'read_file' && result && !result.error) readSource = true;
       if (call.function.name === 'propose_source_edit' && result?.proposed) proposed = true;

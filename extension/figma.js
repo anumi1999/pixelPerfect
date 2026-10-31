@@ -20,10 +20,22 @@ export async function loadFigma({ url, token, fetchImpl = fetch }) {
     ? `https://api.figma.com/v1/files/${fileKey}/nodes?ids=${encodeURIComponent(nodeId)}`
     : `https://api.figma.com/v1/files/${fileKey}?depth=4`;
   const res = await fetchImpl(endpoint, { headers: { 'X-Figma-Token': token } });
+  if (res.status === 429) {
+    const after = Number(res.headers?.get?.('retry-after'));
+    const wait = !after ? 'later' : after < 120 ? `in ${after} seconds` : after < 7200 ? `in ${Math.round(after / 60)} minutes` : `in ${Math.round(after / 3600)} hours`;
+    throw new Error(`Figma's API limit for your plan is used up (429). Try again ${wait}. The last design you loaded is still used from the cache.`);
+  }
+  if (res.status === 403) throw new Error('Figma returned 403: check the token (it needs file read access) and that you can open this file.');
   if (!res.ok) throw new Error(`Figma returned ${res.status}. Check the token and that you can open this file.`);
   const data = await res.json();
   const root = nodeId ? data.nodes?.[nodeId]?.document : data.document;
   if (!root) throw new Error('Figma did not return that frame. Copy the link again with the frame selected.');
+  useDesign({ fileKey, nodeId, root });
+  return { ...figmaSummary(), raw: { fileKey, nodeId, root } };
+}
+
+// Uses a design that was loaded before (from the cache), without calling Figma.
+export function useDesign({ fileKey, nodeId, root }) {
   const components = [];
   index(root, components, 0);
   design = { fileKey, nodeId, name: root.name, components };
@@ -135,14 +147,32 @@ export function specFor(id) {
   const checks = [];
   const spec = { name: node.name, size: { width: Math.round(node.absoluteBoundingBox.width), height: Math.round(node.absoluteBoundingBox.height) }, layers: [] };
 
+  frameWidth = design.components[0]?.box?.width || 1440;
   containerChecks(node, checks, null, spec);
   walkChildren(node, checks, spec, 0);
+  spec.notChecked = notChecked(node);
 
   return {
     figma: spec,
     checks,
-    note: 'Use these checks as the acceptance criteria. Sizes depend on screen width, so width/height are listed in "figma.size" but not checked. Text layers are found by their text inside the selected element.'
+    note: 'Use ALL these checks as the acceptance criteria: a verify only counts if it includes every one of them. List figma.notChecked under NOT TESTED, and mention elements on the page that the design does not have (e.g. an extra button). Sizes depend on screen width, so width/height are listed in "figma.size" but not checked. Text layers are found by their text inside the selected element.'
   };
+}
+
+let frameWidth = 1440;
+
+// What the design has that the checks cannot measure, so the agent lists it under NOT TESTED.
+function notChecked(node) {
+  const out = new Set();
+  (function walk(n, depth) {
+    if (n.visible === false || depth > 6) return;
+    if ((n.fills || []).some((f) => f.visible !== false && f.type?.startsWith('GRADIENT'))) out.add(`gradient fill on "${n.name}"`);
+    if ((n.fills || []).some((f) => f.visible !== false && f.type === 'IMAGE')) out.add(`image on "${n.name}"`);
+    if (['VECTOR', 'STAR', 'BOOLEAN_OPERATION', 'ELLIPSE', 'POLYGON'].includes(n.type)) out.add(`icon/shape "${n.name}" (compare by eye)`);
+    if ((n.effects || []).some((e) => e.visible !== false && /SHADOW/.test(e.type))) out.add(`shadow on "${n.name}"`);
+    for (const c of n.children || []) walk(c, depth + 1);
+  })(node, 0);
+  return [...out].slice(0, 8);
 }
 
 function containerChecks(n, checks, target, spec) {
@@ -173,6 +203,10 @@ function walkChildren(node, checks, spec, depth) {
       if (s.fontWeight) checks.push({ type: 'css', property: 'font-weight', expected: String(s.fontWeight), target: { text } });
       const color = solidFill(c);
       if (color) checks.push({ type: 'css', property: 'color', expected: color, target: { text } });
+      // One line in the design → it should not wrap on screens close to the design's width.
+      const lh = s.lineHeightPx || (s.fontSize || 14) * 1.25;
+      const h = c.absoluteBoundingBox?.height || 0;
+      if (h && h < lh * 1.5 && text.length > 20) checks.push({ type: 'lines', expected: '1', min_viewport: Math.round(frameWidth * 0.6), target: { text } });
       spec.layers.push({ name: c.name, text, fontSize: s.fontSize, fontWeight: s.fontWeight, color });
     } else if (CONTAINERS.has(c.type) || c.type === 'RECTANGLE') {
       // A nested frame with its own text (e.g. a button) is found by that text.
