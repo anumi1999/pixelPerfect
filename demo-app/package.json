@@ -1,3 +1,4 @@
+
 {
   "name": "pixelperfect-demo-shop",
   "private": true,
@@ -13,6 +14,6 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "4.3.4",
-    "vite": "5.4.11"
+    "vite": "5.4.19"
   }
 }

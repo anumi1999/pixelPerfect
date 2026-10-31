@@ -116,6 +116,10 @@ const BRIDGE_TOOLS = new Set(['find_in_source', 'read_file']);
 // Runs a tool by name.
 export async function runTool(tabId, name, args) {
   if (name === 'verify_responsive') return verifyResponsive(tabId, args);
+  if (BRIDGE_TOOLS.has(name) || name === 'propose_source_edit') {
+    const off = await notLocalProject(tabId);
+    if (off) return off;
+  }
   if (BRIDGE_TOOLS.has(name)) return viaBridge(name, args);
   if (name === 'propose_source_edit') return proposeEdit(args);
   if (name === 'withdraw_source_edit') return withdrawEdit(args);
@@ -135,12 +139,45 @@ function figmaSpec({ figma_id }) {
   try { return specFor(figma_id); } catch (err) { return { error: err.message }; }
 }
 
+// The bridge serves the developer's local project. Source tools only make sense when the page
+// in the tab IS that project (a local dev server), not a live site like netflix.com.
+const LOCAL_HOST = /^(localhost|127(\.\d+){3}|0\.0\.0\.0|\[::1\]|10(\.\d+){3}|192\.168(\.\d+){2}|172\.(1[6-9]|2\d|3[01])(\.\d+){2}|.+\.(local|localhost|test))$/;
+async function notLocalProject(tabId) {
+  let url;
+  try { url = new URL((await chrome.tabs.get(tabId)).url); } catch { return null; }
+  if (url.protocol === 'file:' || LOCAL_HOST.test(url.hostname)) return null;
+  return { error: `Source tools are off: this page (${url.hostname}) is not served from the developer's local project, so the files the bridge sees are not this page's code. Do not search or edit files. Give the CSS fix in your final answer instead.` };
+}
+
+// Rejects source changes a teammate would not accept.
+function lintEdit(find, replace) {
+  const count = (s, re) => (s.match(re) || []).length;
+  const problems = [];
+  if (count(replace, /!important/g) > count(find, /!important/g)) problems.push('adds !important');
+  if (/\[class[*^$|~]?=/.test(replace) && !/\[class[*^$|~]?=/.test(find)) problems.push('uses [class*=…] attribute matching on class names');
+  const hashed = [...new Set((replace.match(/\.[a-z][\w-]*/gi) || []).filter((c) =>
+    !find.includes(c) && c.slice(1).split(/[-_]/).some((part) => part.length >= 5 && /\d/.test(part) && /[a-z]/i.test(part))))];
+  const hashedAttr = [...new Set((replace.match(/(?:css|cache|sc|jsx|emotion)-[a-z0-9]{5,}/gi) || []).filter((c) => !find.includes(c)))];
+  if (hashed.length || hashedAttr.length) problems.push(`uses generated class names (${[...hashed, ...hashedAttr].slice(0, 4).join(', ')}) that change on every build`);
+  return problems;
+}
+
+// Can the agent change code for this tab? Local page + bridge answering.
+export async function sourceStatus(tabId) {
+  const off = await notLocalProject(tabId);
+  if (off) return { ok: false, reason: 'live-site' };
+  try { await bridgeRequest('hello', {}, 3000); return { ok: true }; }
+  catch { return { ok: false, reason: 'no-bridge' }; }
+}
+
 async function viaBridge(action, args) {
   try { return await bridgeRequest(action, args); }
   catch (err) { return { error: err.message, hint: 'If the bridge is not running, give the source fix in your final answer instead.' }; }
 }
 
 async function proposeEdit({ file, find, replace, reason }) {
+  const problems = lintEdit(find || '', replace || '');
+  if (problems.length) return { error: `Not proposed: the change ${problems.join(' and ')}. Rewrite it: change the rule that causes the problem, use stable selectors from the source, and no !important.` };
   let check;
   try { check = await bridgeRequest('check_edit', { file, find, replace }); }
   catch (err) { return { error: err.message }; }

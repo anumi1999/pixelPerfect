@@ -20,19 +20,35 @@ Built during the **Meta Global AI Developer Hackathon** (Oct 27 – Nov 4, 2026)
 You need Node 18+ and Chrome.
 
 ```bash
-# 1. The demo shop with planted bugs (see demo-app/BUGS.md)
-cd demo-app && npm install && npm run dev          # http://localhost:5173
+# First time only
+cd bridge && npm install && cd ../demo-app && npm install
 
-# 2. The bridge, in a second terminal (prints a pairing token)
-cd bridge && npm install && cd .. && node bridge/index.js ./demo-app
+# Terminal 1: the demo shop
+cd demo-app && npm run dev                      # http://localhost:5173
+
+# Terminal 2: the bridge (prints a token that stays the same every time)
+node bridge/index.js ./demo-app
 ```
 
 3. Chrome → `chrome://extensions` → Developer mode → **Load unpacked** → choose `extension/`.
-4. Open the pixelPerfect side panel → **Settings**:
-   - Meta API key and model (Cloud), then **Save** and **Test current mode**
-   - Bridge pairing token from the terminal, then **Save** (the trace shows "Bridge connected")
-   - Optional: Figma link and personal access token, then **Load design**
+4. Open the pixelPerfect side panel → **Settings**: Meta API key and model (Cloud), the bridge token (first time only), then **Save** (the trace shows "Bridge connected") and **Test current mode**. Optional: Figma link and personal access token, then **Load design**.
 5. Open `http://localhost:5173`, click **Pick elements**, pick the featured "Trail Runner" card, and ask: *padding should be 24px like the other cards*.
+
+### Using pixelPerfect on your own project (no changes to your app)
+
+```bash
+node bridge/index.js /path/to/your/project
+```
+
+The bridge prints a pairing token and saves it in `~/.pixelperfect/bridge-token`. Paste it into Settings **once**; it stays the same every time you start the bridge. Without the optional plugin, pixelPerfect still finds source files through Vite's stylesheet paths, React's component source locations, and `find_in_source`.
+
+**Optional, for Vite + React projects:**
+- `ppSourceBabel` tags every element with its exact file and line (the demo shop uses it; see `demo-app/vite.config.js`).
+- `pixelPerfect()` makes `npm run dev` start the bridge and pair automatically, so there's no second terminal. Don't use it together with a manually started bridge: both use port 7777.
+
+Both are dev only; nothing reaches production builds.
+
+**How automatic pairing stays safe:** the plugin only runs on the dev server (`apply: 'serve'`), never in builds. The extension only accepts the hint from a page served from your machine, pointing at a bridge on your machine. The bridge still refuses any connection that isn't from a Chrome extension.
 
 ### Figma design for the demo
 
@@ -91,4 +107,6 @@ The checks listed in the answer passed, at the screen widths tested, in the page
 - **`space-between` fooled the centering check.** Children spanning the full width have 0px gaps at both ends. Fix: centering children also requires them to sit together.
 - **Backticks in the system prompt broke the build.** The prompt lives in a JavaScript template string. Caught by the end-to-end test.
 - **Muse Spark wrote the fix in its answer instead of proposing it.** On the first real run it diagnosed the bug perfectly and read the file, but skipped `propose_source_edit`, so there was nothing to apply. Fix: a firmer prompt, plus a safety net in the loop that reminds the model once when it has a verified fix and a readable file but no proposed edit.
+- **The agent "fixed" something that was already correct.** The card already had 24px padding, yet the agent proposed adding `padding: var(--space-6)`. The safety net that reminds it to propose had pushed it into inventing a change. Fix: the reminder only fires after a check has failed, and `propose_source_edit` is refused when every check passed before any change.
+- **Running the bridge in a second terminal was friction.** Fix: the Vite plugin starts it with `npm run dev` and pairs the extension through a dev-only meta tag. First attempt failed because Vite bundles its config and choked on the bridge's `#!` line; loading the bridge at runtime fixed it.
 - **Planted-bug comments would have given the answers away.** The agent reads source files, so the bug list moved to `BUGS.md`, which the bridge never opens.

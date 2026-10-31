@@ -13,9 +13,18 @@ if (!window.__ppContentLoaded) {
 
   // ── Messages from the side panel ────────────────────────────────────────────
   chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
-    if (msg.type === 'PP_PICK') { startPicking(); reply({ ok: true }); return; }
+    if (msg.type === 'PP_PICK') { sendBridgeHint(); startPicking(); reply({ ok: true }); return; }
     if (msg.type === 'PP_PREVIEW_MODE') { reply(setPreviewMode(msg.mode)); return; }
     if (msg.type === 'PP_DISCARD') { reply(discardAll()); return; }
+    if (msg.type === 'PP_CLEAR_SELECTION') { reply(clearSelection()); return; }
+    if (msg.type === 'PP_MARKERS') { markersHidden = !msg.visible; placeMarkers(); reply({ ok: true }); return; }
+    if (msg.type === 'PP_ELEMENT_BOX') {
+      const el = selection[0];
+      if (!el?.isConnected) { reply(null); return; }
+      const r = el.getBoundingClientRect();
+      reply({ x: r.left, y: r.top, width: r.width, height: r.height, viewportWidth: innerWidth, viewportHeight: innerHeight });
+      return;
+    }
     if (msg.type === 'PP_TOOL') {
       try { reply(runTool(msg.name, msg.args || {})); }
       catch (err) { reply({ error: String(err.message || err) }); }
@@ -47,6 +56,13 @@ if (!window.__ppContentLoaded) {
   }
 
   const pick = (i) => selection[i ?? 0] || null;
+
+  // The pixelPerfect Vite plugin puts the bridge address and token in a meta tag (dev only).
+  // The side panel decides whether to trust it (only for pages served from this machine).
+  function sendBridgeHint() {
+    const meta = document.querySelector('meta[name="pixelperfect-bridge"]');
+    if (meta?.content) chrome.runtime.sendMessage({ type: 'PP_BRIDGE_HINT', value: meta.content });
+  }
 
   // ── Element picker ──────────────────────────────────────────────────────────
   // Click: select. Shift+click: add to selection and keep picking.
@@ -135,6 +151,7 @@ if (!window.__ppContentLoaded) {
 
   // Numbered outlines on selected elements, kept in place while scrolling.
   let markers = [];
+  let markersHidden = false;   // hidden while the side panel takes before/after screenshots
   function drawMarkers() {
     markers.forEach((m) => m.remove());
     markers = selection.map((el, i) => {
@@ -154,9 +171,19 @@ if (!window.__ppContentLoaded) {
       const m = markers[i];
       if (!m) return;
       const r = el.getBoundingClientRect();
-      Object.assign(m.style, { top: `${r.top}px`, left: `${r.left}px`, width: `${r.width}px`, height: `${r.height}px`, display: showingOriginal ? 'none' : 'block' });
+      Object.assign(m.style, { top: `${r.top}px`, left: `${r.left}px`, width: `${r.width}px`, height: `${r.height}px`, display: showingOriginal || markersHidden ? 'none' : 'block' });
     });
   }
+  // Removes the numbered outlines and forgets the selection. Live previews are left as they are.
+  function clearSelection() {
+    stopPicking();
+    markers.forEach((m) => m.remove());
+    markers = [];
+    selection = [];
+    baseline = [];
+    return { cleared: true };
+  }
+
   addEventListener('scroll', () => requestAnimationFrame(placeMarkers), true);
   addEventListener('resize', () => requestAnimationFrame(placeMarkers));
 

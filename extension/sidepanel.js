@@ -2,14 +2,89 @@ import { runAgent, callMuseSpark } from './agent.js';
 import { configureBridge, bridgeRequest } from './bridge.js';
 import { state, resetRun } from './state.js';
 import { loadFigma, figmaSummary } from './figma.js';
+import { sourceStatus } from './tools.js';
 
 const $ = (id) => document.getElementById(id);
 let tabId = null;
-let elements = [];      // descriptions of the picked elements (index = position)
+let elements = [];        // descriptions of the picked elements (index = position)
 let running = false;
 
-// ── Settings ──────────────────────────────────────────────────────────────────
+// What this run has shown so far (everything on screen comes from here).
+const run = {
+  previewed: false,       // a preview was applied at least once
+  firstFailing: null,     // the first verify that failed (the "before" numbers)
+  lastVerify: null,       // the most recent verify result
+  responsive: null,       // the most recent verify_responsive result
+  answer: '',             // the agent's final text
+  verified: false
+};
+// A session keeps the conversation with the agent across requests, so follow-ups like
+// "only on the featured card" build on the previous change.
+let session = { messages: null, notes: [], turns: [] };
+
+function newSession() {
+  session = { messages: null, notes: [], turns: [] };
+  renderThread();
+}
+$('newSession').addEventListener('click', () => { newSession(); resetRunView(); setStatus('New session', ''); $('goal').focus(); });
+
+function renderThread() {
+  const turns = session.turns;
+  $('sessionHead').hidden = turns.length === 0;
+  $('thread').hidden = turns.length === 0;
+  $('turnCount').textContent = turns.length ? `· ${turns.length} request${turns.length === 1 ? '' : 's'}` : '';
+  $('thread').replaceChildren(...turns.map((t) => {
+    const li = document.createElement('li');
+    const ask = document.createElement('span');
+    ask.className = 'ask';
+    ask.textContent = t.goal;
+    const out = document.createElement('span');
+    out.className = `outcome ${t.kind || ''}`;
+    out.textContent = t.outcome;
+    li.append(ask, out);
+    return li;
+  }));
+  $('thread').scrollTop = $('thread').scrollHeight;
+  $('goal').placeholder = turns.length
+    ? 'Follow up… e.g. "only on the featured card" or "a bit darker"'
+    : 'What\'s wrong? e.g. "padding should be 24px like the other cards"';
+  $('run').textContent = turns.length ? 'Send' : 'Fix it';
+}
+
+function updateLastTurn(outcome, kind) {
+  const last = session.turns.at(-1);
+  if (!last) return;
+  last.outcome = outcome;
+  last.kind = kind;
+  renderThread();
+}
+
+function resetRunView() {
+  Object.assign(run, { previewed: false, firstFailing: null, lastVerify: null, responsive: null, answer: '', verified: false });
+  for (const id of ['causeBlock', 'previewCard', 'checksCard', 'diffCard', 'actionBar', 'applied']) $(id).hidden = true;
+  $('shotBefore').removeAttribute('src');
+  $('shotAfter').removeAttribute('src');
+  $('trace').replaceChildren();
+  setStepper(null);
+  setFooter('idle');
+}
+
+// ── Settings view ─────────────────────────────────────────────────────────────
 const FIELDS = ['apiKey', 'model', 'baseUrl', 'localUrl', 'localModel', 'localKey', 'bridgeUrl', 'bridgeToken', 'figmaUrl', 'figmaToken'];
+const mode = () => document.querySelector('input[name="mode"]:checked').value;
+
+function showSettings(open) {
+  $('settingsView').hidden = !open;
+  $('mainView').hidden = open;
+}
+$('openSettings').addEventListener('click', () => showSettings($('settingsView').hidden));
+$('closeSettings').addEventListener('click', () => showSettings(false));
+$('closePanel').addEventListener('click', () => window.close());
+
+function settingsStatus(text, kind = '') {
+  $('settingsStatus').textContent = text;
+  $('settingsStatus').style.color = kind === 'bad' ? 'var(--bad)' : kind === 'ok' ? 'var(--ok)' : '';
+}
 
 async function loadDesign() {
   const url = $('figmaUrl').value.trim();
@@ -19,11 +94,9 @@ async function loadDesign() {
     const s = await loadFigma({ url, token: $('figmaToken').value.trim() });
     $('figmaStatus').textContent = `Figma: "${s.name}" loaded, ${s.components} components`;
   } catch (err) {
-    $('figmaStatus').textContent = 'Figma design not loaded';
-    addTrace('error', 'Could not load the Figma design', err.message);
+    $('figmaStatus').textContent = `Figma design not loaded: ${err.message}`;
   }
 }
-
 $('loadFigma').addEventListener('click', async () => {
   await chrome.storage.local.set({ figmaUrl: $('figmaUrl').value.trim(), figmaToken: $('figmaToken').value.trim() });
   await loadDesign();
@@ -34,12 +107,16 @@ function applyBridgeSettings() {
 }
 
 async function checkBridge() {
-  if (!$('bridgeToken').value.trim()) return;
+  if (!$('bridgeToken').value.trim()) return false;
   try {
     const info = await bridgeRequest('hello', {}, 5000);
+    settingsStatus(`Bridge connected: ${info.project} (${info.sourceFiles} source files)`, 'ok');
     addTrace('pass', `Bridge connected: ${info.project}`, `${info.sourceFiles} source files in ${info.root}`);
+    return true;
   } catch (err) {
+    settingsStatus(`Bridge not connected: ${err.message}`, 'bad');
     addTrace('error', 'Bridge not connected', err.message);
+    return false;
   }
 }
 
@@ -47,30 +124,24 @@ async function loadSettings() {
   const s = await chrome.storage.local.get([...FIELDS, 'mode', 'allowEscalation']);
   for (const f of FIELDS) if (s[f]) $(f).value = s[f];
   $('allowEscalation').checked = !!s.allowEscalation;
-  const mode = s.mode || 'cloud';
-  document.querySelector(`input[name="mode"][value="${mode}"]`).checked = true;
+  document.querySelector(`input[name="mode"][value="${s.mode || 'cloud'}"]`).checked = true;
   applyBridgeSettings();
   showReadiness();
   if (s.figmaUrl && s.figmaToken) loadDesign();
 }
 
-const mode = () => document.querySelector('input[name="mode"]:checked').value;
-
-// Connection settings for one provider.
 function provider(which) {
   return which === 'local'
     ? { name: 'Muse Glimmer (local)', apiKey: $('localKey').value.trim(), model: $('localModel').value.trim(), baseUrl: $('localUrl').value.trim() }
     : { name: 'Muse Spark (cloud)', apiKey: $('apiKey').value.trim(), model: $('model').value.trim(), baseUrl: $('baseUrl').value.trim() };
 }
 
-function ready() {
-  return mode() === 'cloud' ? !!$('apiKey').value.trim() : !!$('localUrl').value.trim();
-}
+const ready = () => (mode() === 'cloud' ? !!$('apiKey').value.trim() : !!$('localUrl').value.trim());
 
 function showReadiness() {
   const m = mode();
-  if (m === 'cloud' && !$('apiKey').value.trim()) { setStatus('Add your Meta API key in Settings', 'bad'); $('settings').open = true; }
-  else setStatus(m === 'local' ? 'Local mode: nothing leaves this laptop' : m === 'auto' ? 'Auto: local first' : 'Cloud mode', 'ok');
+  if (m === 'cloud' && !$('apiKey').value.trim()) setStatus('Add your Meta API key in Settings (gear icon)', 'bad');
+  else setStatus(m === 'local' ? 'Local mode: nothing leaves this laptop' : m === 'auto' ? 'Auto: local first, cloud if needed' : 'Ready · Muse Spark', '');
   updateRunButton();
 }
 
@@ -82,27 +153,47 @@ document.querySelectorAll('input[name="mode"]').forEach((r) => r.addEventListene
 $('save').addEventListener('click', async () => {
   const values = Object.fromEntries(FIELDS.map((f) => [f, $(f).value.trim()]));
   await chrome.storage.local.set({ ...values, mode: mode(), allowEscalation: $('allowEscalation').checked });
-  setStatus('Saved', 'ok');
+  settingsStatus('Saved', 'ok');
   applyBridgeSettings();
-  updateRunButton();
+  showReadiness();
   await checkBridge();
 });
 
 $('test').addEventListener('click', async () => {
   const p = provider(mode() === 'cloud' ? 'cloud' : 'local');
-  setStatus(`Testing ${p.name}…`);
+  settingsStatus(`Testing ${p.name}…`);
   try {
     const msg = await callMuseSpark([{ role: 'user', content: 'Reply with exactly: pixelPerfect connected' }], p, false);
-    setStatus(`${p.name}: ${(msg.content || '').slice(0, 40)}`, 'ok');
+    settingsStatus(`${p.name}: ${(msg.content || '').slice(0, 40)}`, 'ok');
   } catch (err) {
-    setStatus('Connection failed', 'bad');
-    addTrace('error', `Connection test: ${p.name}`, err.message);
+    settingsStatus(`Connection failed: ${err.message}`, 'bad');
   }
 });
 
 function setStatus(text, kind = '') {
   $('status').textContent = text;
   $('status').className = `status ${kind}`;
+}
+
+// ── Stepper: Inspect → Explain → Fix → Verify ────────────────────────────────
+const STEPS = ['inspect', 'explain', 'fix', 'verify'];
+const STAGE_OF = {
+  inspect_element: 'inspect', get_structure: 'inspect', get_component: 'inspect', get_figma_match: 'inspect',
+  get_matched_rules: 'explain', find_in_source: 'explain', read_file: 'explain', get_figma_spec: 'explain',
+  preview_css: 'fix', preview_stylesheet: 'fix', undo_preview: 'fix', propose_source_edit: 'fix', withdraw_source_edit: 'fix',
+  verify: 'verify', verify_responsive: 'verify'
+};
+
+// stage: one of STEPS, 'finished', 'failed' or null (reset)
+function setStepper(stage) {
+  const items = [...$('stepper').children];
+  const at = stage === 'finished' || stage === 'failed' ? 3 : STEPS.indexOf(stage);
+  items.forEach((li, i) => {
+    li.classList.toggle('done', stage === 'finished' ? true : at >= 0 && i < at);
+    li.classList.toggle('active', at >= 0 && i === at && stage !== 'finished');
+    li.classList.toggle('finished', stage === 'finished');
+    li.classList.toggle('failed', stage === 'failed' && i === 3);
+  });
 }
 
 // ── Picking elements ──────────────────────────────────────────────────────────
@@ -114,10 +205,29 @@ $('pick').addEventListener('click', async () => {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['page-main.js'], world: 'MAIN' });
     await chrome.scripting.executeScript({ target: { tabId }, files: ['verify.js', 'content.js'] });
     await chrome.tabs.sendMessage(tabId, { type: 'PP_PICK' });
-    $('pick').textContent = 'Picking… (click the page, Esc to stop)';
+    $('pick').textContent = 'Picking… (Esc to stop)';
   } catch (err) {
-    addTrace('error', 'Could not open the picker', `${err.message}\nTip: this works on normal web pages and localhost, not on chrome:// pages.`);
+    setStatus('Could not open the picker on this page', 'bad');
+    addTrace('error', 'Could not open the picker', `${err.message}\nThis works on normal web pages and localhost, not on chrome:// pages.`);
   }
+});
+
+// Automatic pairing (only used with the optional Vite plugin): trust only local pages and a local bridge.
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+chrome.runtime.onMessage.addListener(async (msg, sender) => {
+  if (msg.type !== 'PP_BRIDGE_HINT') return;
+  try {
+    const page = new URL(sender.tab?.url || '');
+    const [wsUrl, token] = String(msg.value).split('#');
+    const bridge = new URL(wsUrl);
+    if (!LOCAL_HOSTS.has(page.hostname) || !LOCAL_HOSTS.has(bridge.hostname) || bridge.protocol !== 'ws:' || !/^[a-f0-9]{8,64}$/i.test(token || '')) return;
+    if ($('bridgeToken').value.trim() === token && $('bridgeUrl').value.trim() === wsUrl) return;
+    $('bridgeUrl').value = wsUrl;
+    $('bridgeToken').value = token;
+    await chrome.storage.local.set({ bridgeUrl: wsUrl, bridgeToken: token });
+    applyBridgeSettings();
+    await checkBridge();
+  } catch { /* ignore malformed hints */ }
 });
 
 chrome.runtime.onMessage.addListener((msg, sender) => {
@@ -126,26 +236,58 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   elements = msg.elements;
   if (!msg.picking) $('pick').textContent = 'Pick again';
   renderSelection();
-  $('review').hidden = true;
+  resetRunView();
   updateRunButton();
   if (!msg.picking) $('goal').focus();
 });
 
-function renderSelection() {
+const humanize = (s) => s.replace(/[-_]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/\b\w/g, (c) => c.toUpperCase());
+const fileAndLine = (src) => {
+  const m = String(src || '').match(/([^/\\]+?):(\d+)(?::\d+)?$/);
+  return m ? { file: m[1], line: Number(m[2]) } : src ? { file: String(src).split(/[/\\]/).pop(), line: null } : null;
+};
+
+function renderSelection(where) {
+  const has = elements.length > 0;
+  $('emptySelection').hidden = has;
+  $('elementRow').hidden = !has;
+  $('clearSelection').hidden = !has;
+  $('countBtn').hidden = !has;
+  if (!has) { $('selection').hidden = true; return; }
+
+  const e = elements[0];
+  const main = e.classes.find((c) => !c.startsWith('fixel')) || e.tag;
+  $('elName').textContent = humanize(main.replace(/__/g, ' ')).slice(0, 40);
+  $('elClass').textContent = e.classes.length ? '.' + e.classes.slice(0, 2).join('.') : `<${e.tag}>`;
+  const loc = where || fileAndLine(e.source);
+  $('elWhere').textContent = loc ? `in ${loc.file}${loc.line ? ` · line ${loc.line}` : ''}` : `${e.size}${e.children ? ` · ${e.children} children` : ''}`;
+  $('countText').textContent = `${elements.length} element${elements.length === 1 ? '' : 's'}`;
+
   const list = $('selection');
   list.start = 0;
-  list.replaceChildren(...elements.map((e) => {
+  list.replaceChildren(...elements.map((el) => {
     const li = document.createElement('li');
-    const cls = e.classes.length ? '.' + e.classes.slice(0, 2).join('.') : '';
-    const lines = [`<${e.tag}${e.id ? '#' + e.id : ''}${cls}>  ${e.size}${e.children ? `  · ${e.children} children` : ''}`];
-    if (e.text) lines.push(`"${e.text.slice(0, 60)}"`);
-    if (e.source) lines.push(e.source);
-    li.textContent = lines.join('\n');
-    li.style.whiteSpace = 'pre-wrap';
+    const cls = el.classes.length ? '.' + el.classes.slice(0, 2).join('.') : '';
+    li.textContent = [`<${el.tag}${el.id ? '#' + el.id : ''}${cls}>  ${el.size}`, el.text ? `"${el.text.slice(0, 60)}"` : '', el.source || ''].filter(Boolean).join('\n');
     return li;
   }));
-  list.hidden = elements.length === 0;
 }
+
+$('countBtn').addEventListener('click', () => {
+  const open = $('selection').hidden;
+  $('selection').hidden = !open;
+  $('countBtn').setAttribute('aria-expanded', String(open));
+});
+
+// Removes the green outlines from the page and empties the selection.
+async function clearSelection() {
+  await sendToPage({ type: 'PP_CLEAR_SELECTION' });
+  elements = [];
+  renderSelection();
+  $('pick').textContent = 'Pick elements';
+  updateRunButton();
+}
+$('clearSelection').addEventListener('click', clearSelection);
 
 // ── Running the agent ─────────────────────────────────────────────────────────
 function updateRunButton() {
@@ -161,68 +303,280 @@ $('run').addEventListener('click', async () => {
   if (!goal || running) return;
   running = true;
   updateRunButton();
-  $('review').hidden = true;
-  $('applied').hidden = true;
-  $('trace').replaceChildren();
+  if (session.turns.length && state.pendingEdits.length) {
+    session.notes.push('Your previous proposal was NOT applied to the code; its preview is still on the page. Build on it or replace it, and propose the complete change again.');
+  }
+  resetRunView();
   resetRun();
+  setStepper('inspect');
+  setFooter('working');
+  let outcome = null;
   try {
     const m = mode();
-    const first = m === 'cloud' ? 'cloud' : 'local';
-    let outcome = await runWith(first, goal);
-
-    // Auto: if the local model couldn't produce a verified fix, escalate to Muse Spark (with permission).
+    outcome = await runWith(m === 'cloud' ? 'cloud' : 'local', goal);
     if (m === 'auto' && !outcome?.verified) {
       if ($('allowEscalation').checked && $('apiKey').value.trim()) {
-        addTrace('fail', 'Local model could not verify a fix', 'Discarding its previews and escalating to Muse Spark (cloud). Page details for the selected elements will be sent to the Meta Model API.');
+        addTrace('fail', 'Local model could not verify a fix', 'Discarding its previews and escalating to Muse Spark (cloud). Details of the selected elements will be sent to the Meta Model API.');
         await sendToPage({ type: 'PP_DISCARD' });
         resetRun();
+        Object.assign(run, { previewed: false, firstFailing: null, lastVerify: null, responsive: null });
         outcome = await runWith('cloud', goal);
       } else {
-        addTrace('fail', 'Local model could not verify a fix', 'Cloud escalation is off. Turn on "allow sending page details to Muse Spark" in Settings, or switch to Cloud mode.');
+        addTrace('fail', 'Local model could not verify a fix', 'Cloud escalation is off. Allow it in Settings, or switch to Cloud mode.');
       }
     }
-    setStatus(outcome?.verified ? 'Done: verified' : 'Done: not verified', outcome?.verified ? 'ok' : 'bad');
   } catch (err) {
     addTrace('error', 'Agent stopped', err.message);
-    setStatus('Error', 'bad');
+    $('traceCard').hidden = false;
   }
   running = false;
+  run.verified = !!outcome?.verified;
+  if (outcome?.messages) { session.messages = outcome.messages; session.notes = []; }
   updateRunButton();
-  await refreshReview();
+  const summary = await showResult();
+  if (outcome) {
+    session.turns.push({ goal, ...summary });
+    renderThread();
+    $('goal').value = '';
+  }
 });
 
 async function runWith(which, goal) {
   const p = provider(which);
-  addTrace('', `Using ${p.name}`, which === 'local' ? 'Everything stays on this laptop.' : 'Page details for the selected elements are sent to the Meta Model API.');
-  setStatus(`${p.name} working…`);
+  addTrace('', `Using ${p.name}`, which === 'local' ? 'Everything stays on this laptop.' : 'Details of the selected elements are sent to the Meta Model API.');
+  setStatus(`${p.name} is working…`);
   try {
     const fig = figmaSummary();
     const context = fig ? `Figma design loaded: "${fig.name}" (${fig.components} components). Use get_figma_match when the request is about matching the design.` : 'No Figma design loaded.';
-    return await runAgent({ goal, element: elements, tabId, settings: p, onStep, context });
+    return await runAgent({ goal, element: elements, tabId, settings: p, onStep, context, history: session.messages, notes: session.notes });
   } catch (err) {
     addTrace('error', `${p.name} stopped`, err.message);
+    $('traceCard').hidden = false;
+    setStatus(err.message.slice(0, 90), 'bad');
     return { verified: false, error: err.message };
   }
 }
 
-// ── Review: see the page with and without the agent's changes ────────────────
 async function sendToPage(message) {
   try { return await chrome.tabs.sendMessage(tabId, message); } catch { return null; }
 }
 
-async function refreshReview() {
+// ── Result: root cause, live preview, checks, actions, footer ────────────────
+async function showResult() {
   const page = await sendToPage({ type: 'PP_PREVIEW_MODE', mode: 'changes' });
   const edits = state.pendingEdits;
-  $('review').hidden = !page?.hasChanges && !edits.length;
-  setToggle(false);
+  const hasChanges = !!page?.hasChanges || edits.length > 0;
+  const alreadyMet = run.verified && !run.firstFailing && !hasChanges;
+
+  // Root cause, and where it lives in the code.
+  const cause = extractSection(run.answer, 'CAUSE') || (alreadyMet ? extractSection(run.answer, 'ANSWER') || firstSentence(run.answer) : '');
+  if (cause || run.answer) {
+    $('causeBlock').hidden = false;
+    $('causeBlock').querySelector('h3').textContent = alreadyMet ? 'Already matches' : 'Root Cause';
+    $('causeText').textContent = cause || firstSentence(run.answer);
+  }
+  const loc = edits[0] ? { file: edits[0].file.split('/').pop(), line: firstChangedLine(edits[0]) } : null;
+  if (loc) renderSelection(loc);
+
+  // Code change (diff) and action bar.
   renderEdits(edits);
+  const source = hasChanges && !edits.length ? await sourceStatus(tabId) : null;
   $('applyCode').disabled = !edits.length;
-  $('applyCode').textContent = edits.length ? `Apply ${edits.length} change${edits.length === 1 ? '' : 's'} to code` : 'Apply to code';
   $('applyNote').textContent = edits.length
-    ? 'Writes these changes to your files, removes the preview, and re-checks the page on the real code.'
-    : page?.hasChanges ? 'No source change proposed. Start the bridge (see Settings) so pixelPerfect can find and edit your files.' : '';
+    ? 'Apply Fix writes this to your files, removes the preview, and re-checks the page on the real code.'
+    : !hasChanges ? ''
+    : source?.reason === 'live-site' ? 'Live site: preview only. pixelPerfect does not change code for sites that are not your local project. The CSS is in the answer.'
+    : source?.reason === 'no-bridge' ? 'No source change: the bridge is not reachable. Start it with node bridge/index.js <your project> and check the token in Settings.'
+    : 'The agent did not propose a code change. Send a follow-up: "propose the code change".';
+  $('actionBar').hidden = !hasChanges;
+  $('toggleDiff').setAttribute('aria-pressed', 'false');
+  $('diffCard').hidden = !(hasChanges && !edits.length);   // explain why Apply is off
+
+  renderChecks();
+  setPreviewButtons(false);
+
+  // Stepper, status and footer.
+  if (run.verified) setStepper('finished'); else if (run.lastVerify || run.responsive) setStepper('failed');
+  const responsiveOk = run.responsive?.allPass === true;
+  let summary;
+  if (alreadyMet) { setStatus('Already matches. Nothing to change', 'ok'); setFooter('already'); summary = { outcome: 'Already matches, nothing changed', kind: 'ok' }; }
+  else if (run.verified && responsiveOk) { setStatus('Fix ready to apply', 'ok'); setFooter('verified-all'); summary = { outcome: `Verified fix${edits.length ? ` ready: ${edits[0].file.split('/').pop()}` : ''}`, kind: 'ok' }; }
+  else if (run.verified) { setStatus('Fix ready to apply', 'ok'); setFooter('verified-one'); summary = { outcome: `Verified fix${edits.length ? ` ready: ${edits[0].file.split('/').pop()}` : ''}`, kind: 'ok' }; }
+  else if (run.lastVerify) { setStatus('Not verified: see Checks', 'bad'); setFooter('failed'); summary = { outcome: 'Not verified', kind: 'bad' }; }
+  else { setStatus(run.answer ? 'Done' : 'Stopped', run.answer ? '' : 'bad'); setFooter('idle'); summary = { outcome: firstSentence(run.answer) || 'Stopped', kind: run.answer ? '' : 'bad' }; }
+
+  if (hasChanges && elements.length) await captureShots();
+  return summary;
 }
 
+const clean = (s) => String(s || '').replace(/\*\*/g, '').replace(/`/g, '').trim();
+function extractSection(text, name) {
+  const m = String(text || '').match(new RegExp(`\\**${name}\\**\\s*:\\s*([\\s\\S]*?)(?=\\n\\s*\\**(?:CAUSE|FIX|VERIFIED|NOT TESTED|My interpretation)\\b|$)`, 'i'));
+  return m ? clean(m[1]).replace(/\s+/g, ' ').slice(0, 320) : '';
+}
+const firstSentence = (t) => clean(t).split(/(?<=[.!?])\s/)[0]?.slice(0, 240) || '';
+function firstChangedLine(edit) {
+  const m = (edit.diff || '').match(/^- (\d+)/m) || (edit.diff || '').match(/^\s+(\d+) /m);
+  return m ? Number(m[1]) + (/^- /m.test(edit.diff) ? 0 : 1) : edit.line;
+}
+
+$('viewCode').addEventListener('click', async () => {
+  const edit = state.pendingEdits[0] || lastApplied;
+  const target = edit ? { file: edit.file, line: edit.line } : fileAndLine(elements[0]?.source) && { file: elements[0].source, line: 1 };
+  if (!target) { $('diffCard').hidden = false; return; }
+  try { await openInEditor(target); }
+  catch (err) { $('diffCard').hidden = false; addTrace('error', 'Could not open the editor', err.message); }
+});
+
+// Opens a file in VS Code through the bridge; falls back to a vscode:// link if the "code" command isn't installed.
+async function openInEditor(target) {
+  const r = await bridgeRequest('open_in_editor', target);
+  if (r?.opened === false && r.fallbackUrl?.startsWith('vscode://file/')) {
+    await chrome.tabs.update(tabId, { url: r.fallbackUrl }).catch(() => window.open(r.fallbackUrl));
+    setStatus('Opening in VS Code…', '');
+  }
+  return r;
+}
+
+// Checks grid: only the checks the agent actually ran.
+const PRETTY = { 'font-weight': 'Weight', 'font-size': 'Font size', 'background-color': 'Background', 'border-top-left-radius': 'Corners', 'border-radius': 'Corners', 'row-gap': 'Gap', 'column-gap': 'Gap', 'justify-content': 'Justify', 'align-items': 'Align' };
+const TYPE_LABEL = { centered: 'Centered', aligned: 'Aligned', visible: 'Visible', no_overflow: 'No overflow' };
+function checkItems(result) {
+  const items = [];
+  const rs = result?.results || [];
+  const pad = rs.filter((r) => r.type === 'css' && /^padding-(top|right|bottom|left)$/.test(r.property || r.summary?.split(':')[0]) && r.target === 'selected element');
+  const padNames = new Set(pad.map((r) => r.summary.split(':')[0]));
+  const padSame = pad.length === 4 && padNames.size === 4 && new Set(pad.map((r) => String(r.expected))).size === 1;
+  if (padSame) items.push({ label: `Padding: ${pad[0].expected}`, pass: pad.every((r) => r.pass) });
+  for (const r of rs) {
+    if (padSame && pad.includes(r)) continue;
+    const prop = r.summary?.split(':')[0];
+    const who = r.target && r.target !== 'selected element' && !/^#\d+ selected element$/.test(r.target) ? `${r.target.replace(/^#\d+ /, '').replace(/"/g, '').slice(0, 14)} ` : '';
+    let label;
+    if (r.type === 'css') label = `${who}${PRETTY[prop] || humanize(prop || 'Style')}: ${r.expected}`;
+    else if (r.type === 'contrast') label = `Contrast: ${String(r.actual).replace(':1', '')}:1`;
+    else if (r.type === 'spacing') label = `Spacing: ${r.expected}`;
+    else if (r.type === 'size') label = `Size`;
+    else label = `${who}${TYPE_LABEL[r.type] || humanize(r.type || 'Check')}`;
+    items.push({ label, pass: !!r.pass });
+  }
+  return items;
+}
+
+function renderChecks() {
+  const items = run.lastVerify ? checkItems(run.lastVerify) : [];
+  if (run.responsive) items.push({ label: 'Responsive', pass: run.responsive.allPass === true });
+  $('checksCard').hidden = items.length === 0;
+  if (!items.length) return;
+  const passed = items.filter((i) => i.pass).length;
+  $('checksCount').textContent = `${passed} / ${items.length} passed`;
+  $('checksCount').className = `count${passed === items.length ? '' : ' bad'}`;
+  $('checksList').replaceChildren(...items.slice(0, 12).map((i) => {
+    const li = document.createElement('li');
+    li.className = i.pass ? 'pass' : 'fail';
+    li.innerHTML = `<svg class="state"><use href="#${i.pass ? 'i-check-circle' : 'i-x-circle'}"/></svg><span></span>${i.pass ? '<svg class="tick"><use href="#i-check"/></svg>' : ''}`;
+    li.querySelector('span').textContent = i.label;   // label text never goes through innerHTML
+    li.title = i.label;
+    return li;
+  }));
+  const warnings = run.lastVerify?.warnings || [];
+  $('warnNote').hidden = !warnings.length;
+  $('warnNote').textContent = warnings.length ? `⚠ ${warnings.length} nearby element${warnings.length === 1 ? '' : 's'} moved. Expected if the fix changes size; see View Details.` : '';
+}
+
+$('viewDetails').addEventListener('click', () => { $('traceCard').hidden = false; $('traceCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+$('hideTrace').addEventListener('click', () => { $('traceCard').hidden = true; });
+
+// Footer
+function setFooter(kind) {
+  const f = $('footer');
+  f.className = 'footer' + (['verified-all', 'verified-one', 'already', 'applied'].includes(kind) ? ' verified' : kind === 'failed' || kind === 'applied-failed' ? ' failed' : '');
+  const text = {
+    idle: 'Nothing changed yet',
+    working: 'Working…',
+    already: 'Already matches: no change needed',
+    'verified-all': 'Fix verified across mobile, tablet and desktop',
+    'verified-one': `Fix verified at this screen size`,
+    failed: 'Not verified yet',
+    applied: 'Applied and re-verified on your code',
+    'applied-failed': 'Applied, but the real code fails a check'
+  }[kind] || '';
+  $('footerText').textContent = text + (kind === 'verified-all' || kind === 'applied' ? ' ✓' : '');
+  for (const w of [375, 768, 1280]) {
+    const icon = $(`dev${w}`);
+    const r = run.responsive?.byWidth?.find((b) => b.width === w);
+    icon.classList.toggle('ok', !!r?.allPass);
+    icon.classList.toggle('fail', !!r && !r.allPass);
+  }
+}
+
+// ── Live preview: real before/after screenshots of the element ───────────────
+function setPreviewButtons(showingOriginal) {
+  $('showOriginal').setAttribute('aria-pressed', String(showingOriginal));
+  $('showChanges').setAttribute('aria-pressed', String(!showingOriginal));
+}
+$('showOriginal').addEventListener('click', async () => { const s = await sendToPage({ type: 'PP_PREVIEW_MODE', mode: 'original' }); if (s) setPreviewButtons(true); });
+$('showChanges').addEventListener('click', async () => { const s = await sendToPage({ type: 'PP_PREVIEW_MODE', mode: 'changes' }); if (s) setPreviewButtons(false); });
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function captureShots() {
+  $('previewCard').hidden = false;
+  $('shotNote').hidden = true;
+  setBadges();
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    await sendToPage({ type: 'PP_MARKERS', visible: false });
+    await sendToPage({ type: 'PP_PREVIEW_MODE', mode: 'original' });
+    await wait(300);
+    const boxBefore = await sendToPage({ type: 'PP_ELEMENT_BOX' });
+    const before = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    await sendToPage({ type: 'PP_PREVIEW_MODE', mode: 'changes' });
+    await wait(650);   // Chrome allows about two screenshots per second
+    const boxAfter = await sendToPage({ type: 'PP_ELEMENT_BOX' });
+    const after = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    await sendToPage({ type: 'PP_MARKERS', visible: true });
+    if (boxBefore) $('shotBefore').src = await crop(before, boxBefore);
+    if (boxAfter) $('shotAfter').src = await crop(after, boxAfter);
+    const offscreen = [boxBefore, boxAfter].some((b) => b && (b.y < 0 || b.y + b.height > b.viewportHeight));
+    if (offscreen) { $('shotNote').hidden = false; $('shotNote').textContent = 'Part of the element is outside the visible page; scroll it into view and run again for a full picture.'; }
+  } catch (err) {
+    await sendToPage({ type: 'PP_MARKERS', visible: true });
+    $('shotNote').hidden = false;
+    $('shotNote').textContent = `Couldn't capture screenshots (${err.message}). Use Original / Changes to compare on the page.`;
+  }
+  setPreviewButtons(false);
+}
+
+async function crop(dataUrl, box) {
+  const img = new Image();
+  img.src = dataUrl;
+  await img.decode();
+  const scale = img.naturalWidth / box.viewportWidth;
+  const pad = 12;
+  const x = Math.max(0, box.x - pad), y = Math.max(0, box.y - pad);
+  const w = Math.min(box.viewportWidth - x, box.width + pad * 2), h = Math.min(box.viewportHeight - y, box.height + pad * 2);
+  if (w <= 0 || h <= 0) throw new Error('the element is not on screen');
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(w * scale);
+  canvas.height = Math.round(h * scale);
+  canvas.getContext('2d').drawImage(img, x * scale, y * scale, w * scale, h * scale, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/png');
+}
+
+// Badges show the first measured difference: the value before, and the value after the fix.
+function setBadges() {
+  const failed = run.firstFailing?.results?.find((r) => !r.pass && r.type === 'css' && r.actual != null);
+  const prop = failed?.summary?.split(':')[0];
+  const shortProp = prop ? (prop.replace(/-(top|right|bottom|left)$/, '').replace('border-top-left-radius', 'radius')) : '';
+  const after = failed && run.lastVerify?.results?.find((r) => r.summary?.split(':')[0] === prop && r.pass);
+  $('badgeBefore').hidden = !failed;
+  $('badgeAfter').hidden = !after;
+  if (failed) $('badgeBefore').textContent = `${shortProp} ${failed.actual}`;
+  if (after) $('badgeAfter').textContent = `${shortProp} ${after.actual}`;
+}
+
+// ── Diff, Apply, Discard, Undo ────────────────────────────────────────────────
 function renderEdits(edits) {
   $('edits').replaceChildren(...edits.map((e) => {
     const box = document.createElement('div');
@@ -246,6 +600,12 @@ function renderEdits(edits) {
   }));
 }
 
+$('toggleDiff').addEventListener('click', () => {
+  const open = $('diffCard').hidden;
+  $('diffCard').hidden = !open;
+  $('toggleDiff').setAttribute('aria-pressed', String(open));
+});
+
 let lastApplied = null;
 
 $('applyCode').addEventListener('click', async () => {
@@ -254,40 +614,45 @@ $('applyCode').addEventListener('click', async () => {
   $('applyCode').disabled = true;
   setStatus('Writing to your files…');
   try {
-    const result = await bridgeRequest('apply_edits', { edits, label: $('goal').value.trim().slice(0, 80) });
+    const result = await bridgeRequest('apply_edits', { edits, label: (session.turns.at(-1)?.goal || $('goal').value.trim()).slice(0, 80) });
     lastApplied = { file: state.pendingEdits[0].file, line: state.pendingEdits[0].line, files: result.files };
     addTrace('pass', `Applied to code: ${result.files.join(', ')}`, state.pendingEdits.map((e) => `${e.file}:${e.line}  ${e.reason}`).join('\n'));
   } catch (err) {
     addTrace('error', 'Could not apply to code', err.message);
-    setStatus('Apply failed', 'bad');
+    setStatus(`Apply failed: ${err.message}`.slice(0, 90), 'bad');
     $('applyCode').disabled = false;
     return;
   }
 
-  // Remove the preview so the page shows only the real code, wait for hot reload, then re-check.
   await sendToPage({ type: 'PP_DISCARD' });
   state.pendingEdits = [];
-  $('review').hidden = true;
+  $('actionBar').hidden = true;
+  $('diffCard').hidden = true;
   setStatus('Waiting for the page to reload…');
-  await new Promise((r) => setTimeout(r, 1500));
-  await reverify('Re-checked on the real code');
-
-  $('appliedSummary').textContent = `Changed ${lastApplied.files.join(', ')}. You can open it in your editor or undo the change.`;
+  await wait(1500);
+  const ok = await reverify();
+  $('appliedSummary').textContent = `Changed ${lastApplied.files.join(', ')}. ${ok ? 'The real code passes the same checks.' : 'Check the result on the page.'}`;
   $('applied').hidden = false;
+  setFooter(ok ? 'applied' : 'applied-failed');
+  session.notes.push(`The developer applied your proposed change(s) to ${lastApplied.files.join(', ')}; the re-check on the real code ${ok ? 'passed' : 'FAILED'}. The source files now contain this change.`);
+  updateLastTurn(ok ? 'Applied to code ✓' : 'Applied, re-check failed', ok ? 'ok' : 'bad');
+  await clearSelection();
 });
 
-async function reverify(label) {
+async function reverify() {
   const checks = state.lastPassingChecks;
-  if (!checks) { addTrace('', label, 'No passing checks from this run to re-run. Look at the page to confirm.'); setStatus('Applied', 'ok'); return; }
+  if (!checks) { setStatus('Applied. No checks to re-run', ''); return false; }
   const v = await sendToPage({ type: 'PP_TOOL', name: 'verify', args: { checks } });
   if (!v || v.error) {
-    addTrace('fail', `${label}: could not run`, `${v?.error || 'The page did not answer.'}\nIf the page fully reloaded, pick the element again and ask pixelPerfect to verify.`);
+    addTrace('fail', 'Re-check on the real code could not run', v?.error || 'The page did not answer. If it fully reloaded, pick the element again.');
     setStatus('Applied, not re-checked', 'bad');
-    return;
+    return false;
   }
-  onStep({ kind: 'result', name: 'verify', result: v });
-  addTrace(v.allPass ? 'pass' : 'fail', v.allPass ? `${label}: all checks pass ✓` : `${label}: some checks fail`, v.allPass ? '' : 'The real code does not behave like the preview. Undo the change, or ask pixelPerfect to look again.');
-  setStatus(v.allPass ? 'Applied and verified' : 'Applied, checks fail', v.allPass ? 'ok' : 'bad');
+  run.lastVerify = v;
+  renderChecks();
+  addTrace(v.allPass ? 'pass' : 'fail', v.allPass ? 'Re-checked on the real code: all checks pass ✓' : 'Re-checked on the real code: some checks fail', v.results.map((r) => r.line).join('\n'));
+  setStatus(v.allPass ? 'Applied and verified on your code' : 'Applied, but checks fail on the real code', v.allPass ? 'ok' : 'bad');
+  return v.allPass;
 }
 
 $('undoCode').addEventListener('click', async () => {
@@ -295,7 +660,10 @@ $('undoCode').addEventListener('click', async () => {
     const r = await bridgeRequest('undo');
     addTrace('', 'Code change undone', (r.restored || []).join('\n') || r.message);
     $('applied').hidden = true;
-    setStatus('Undone', 'ok');
+    session.notes.push('The developer undid the last code change; the files are back to how they were before it.');
+    updateLastTurn('Applied, then undone', '');
+    setStatus('Undone', '');
+    setFooter('idle');
   } catch (err) {
     addTrace('error', 'Could not undo', err.message);
   }
@@ -303,42 +671,52 @@ $('undoCode').addEventListener('click', async () => {
 
 $('openEditor').addEventListener('click', async () => {
   if (!lastApplied) return;
-  try { await bridgeRequest('open_in_editor', { file: lastApplied.file, line: lastApplied.line }); }
+  try { await openInEditor({ file: lastApplied.file, line: lastApplied.line }); }
   catch (err) { addTrace('error', 'Could not open the editor', err.message); }
-});
-
-function setToggle(showingOriginal) {
-  $('toggleView').setAttribute('aria-pressed', String(showingOriginal));
-  $('toggleView').textContent = showingOriginal ? 'Show changes' : 'Show original';
-}
-
-$('toggleView').addEventListener('click', async () => {
-  const showOriginal = $('toggleView').getAttribute('aria-pressed') !== 'true';
-  const state = await sendToPage({ type: 'PP_PREVIEW_MODE', mode: showOriginal ? 'original' : 'changes' });
-  if (state) setToggle(state.mode === 'original');
 });
 
 $('discard').addEventListener('click', async () => {
   await sendToPage({ type: 'PP_DISCARD' });
   state.pendingEdits = [];
-  $('review').hidden = true;
-  addTrace('', 'Changes discarded', 'The page is back to its original state and no source change was written.');
+  if (session.turns.length) {
+    session.notes.push('The developer discarded your preview; nothing was written to the code and the page is back to its original state.');
+    updateLastTurn('Discarded', '');
+  }
+  await clearSelection();
+  resetRunView();
+  setStatus('Changes discarded. The page is back to the original', '');
 });
 
-// ── Trace timeline (every step the agent takes) ───────────────────────────────
+// ── Trace timeline (every step the agent takes; shown under View Details) ─────
 let thinkingItem = null;
 const lastArgs = {};
 
 function onStep(s) {
   thinkingItem?.remove();
   thinkingItem = null;
-  if (s.kind === 'tool') lastArgs[s.name] = s.args;
-  if (s.kind === 'result' && s.name === 'verify' && s.result?.allPass && lastArgs.verify?.checks) state.lastPassingChecks = lastArgs.verify.checks;
+  if (s.kind === 'tool') {
+    lastArgs[s.name] = s.args;
+    let stage = STAGE_OF[s.name];
+    if (s.name === 'verify' && !run.previewed) stage = 'explain';   // a verify before any change confirms the problem
+    if (stage) setStepper(stage);
+    if (s.name.startsWith('preview')) run.previewed = true;
+  }
+  if (s.kind === 'result' && s.name === 'verify' && s.result?.results) {
+    run.lastVerify = s.result;
+    if (!s.result.allPass && !run.firstFailing) run.firstFailing = s.result;
+    if (s.result.allPass && !s.result.checksChanged && lastArgs.verify?.checks) state.lastPassingChecks = lastArgs.verify.checks;
+  }
+  if (s.kind === 'result' && s.name === 'verify_responsive' && s.result?.byWidth) run.responsive = s.result;
+  if (s.kind === 'result' && s.result?.checksChanged) {
+    addTrace('fail', 'Doesn\'t count: the agent changed the original checks', s.result.checksChanged.join('\n'));
+  }
+  if (s.kind === 'final') run.answer = s.text || '';
+
   if (s.kind === 'result' && s.name === 'propose_source_edit' && s.result?.proposed) {
     addTrace('pass', `← proposed change: ${s.result.file}:${s.result.line}`, s.result.diff);
     return;
   }
-  if (s.kind === 'thinking') thinkingItem = addTrace('', `Step ${s.step}: thinking…`);
+  if (s.kind === 'thinking') { thinkingItem = addTrace('', `Step ${s.step}: thinking…`); setStatus(`Thinking… (step ${s.step})`); }
   if (s.kind === 'tool') addTrace('tool', `→ ${s.name}`, Object.keys(s.args).length ? JSON.stringify(s.args, null, 2) : '');
   if (s.kind === 'result' && s.name === 'verify' && s.result?.results) {
     const lines = s.result.results.map((r) => r.line);
@@ -387,9 +765,9 @@ function addTrace(kind, label, body = '', collapsed = false) {
     }
   }
   $('trace').appendChild(li);
-  li.scrollIntoView({ block: 'nearest' });
   return li;
 }
 
 ['apiKey', 'localUrl'].forEach((f) => $(f).addEventListener('input', updateRunButton));
+renderSelection();
 loadSettings();

@@ -40,7 +40,7 @@
   padding: var(--space-3) var(--space-4);
   border: 0;
   border-radius: 4px;
-  background: var(--color-primary);
+  background: orange;
   color: var(--color-primary-text);
   font: inherit;
   font-weight: var(--weight-semibold);

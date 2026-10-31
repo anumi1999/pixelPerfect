@@ -6,80 +6,207 @@
   <link rel="stylesheet" href="sidepanel.css">
 </head>
 <body>
-  <header>
-    <h1>pixelPerfect</h1>
-    <span id="status" class="status">Not configured</span>
+  <!-- Reusable icons -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <linearGradient id="g-brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b06bff"/><stop offset="1" stop-color="#5b7cff"/></linearGradient>
+      <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 1.5c.6 4.9 2.7 8.4 9.5 10.5-6.8 2.1-8.9 5.6-9.5 10.5-.6-4.9-2.7-8.4-9.5-10.5C9.3 9.9 11.4 6.4 12 1.5z" fill="url(#g-brand)"/></symbol>
+      <symbol id="i-gear" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></g></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="currentColor"/><path d="M7 12.5l3.2 3.2L17 9" fill="none" stroke="#0e1a14" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-x-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="currentColor"/><path d="M8.5 8.5l7 7M15.5 8.5l-7 7" fill="none" stroke="#1d0f12" stroke-width="2.4" stroke-linecap="round"/></symbol>
+      <symbol id="i-cursor" viewBox="0 0 24 24"><path d="M5 3l14 7-6 2-2 6z" fill="currentColor"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-bulb" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.9V16h5v-.2c0-.8.4-1.5 1-1.9A6 6 0 0 0 12 3z"/><path d="M12 7v4M12 13v.01"/></g></symbol>
+      <symbol id="i-external" viewBox="0 0 24 24"><path d="M8 16L16 8M9 8h7v7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-monitor" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></g></symbol>
+      <symbol id="i-phone" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M11 18h2"/></g></symbol>
+      <symbol id="i-tablet" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="2.5" width="14" height="19" rx="2"/><path d="M11 18h2"/></g></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-undo" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v6h6"/><path d="M4.5 10A8 8 0 1 1 6 17"/></g></symbol>
+      <symbol id="i-code" viewBox="0 0 24 24"><path d="M9 7l-5 5 5 5M15 7l5 5-5 5M13.5 5l-3 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2l8 3v6c0 5-3.4 9.3-8 11-4.6-1.7-8-6-8-11V5z" fill="currentColor"/><path d="M8 12l3 3 5-6" fill="none" stroke="#0e1a14" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    </defs>
+  </svg>
+
+  <header class="top">
+    <div class="brand">
+      <svg class="logo" aria-hidden="true"><use href="#i-sparkle"/></svg>
+      <div>
+        <h1>pixel<span class="grad">Perfect</span></h1>
+        <p class="tagline">Inspect · Fix · Verify</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button id="openSettings" class="icon-btn" title="Settings" aria-label="Settings"><svg><use href="#i-gear"/></svg></button>
+      <button id="closePanel" class="icon-btn" title="Close" aria-label="Close"><svg><use href="#i-x"/></svg></button>
+    </div>
   </header>
 
-  <fieldset class="mode">
-    <legend>Model</legend>
-    <label><input type="radio" name="mode" value="local"> Local <span>Muse Glimmer on this laptop</span></label>
-    <label><input type="radio" name="mode" value="auto"> Auto <span>local first, cloud if it can't verify</span></label>
-    <label><input type="radio" name="mode" value="cloud" checked> Cloud <span>Muse Spark</span></label>
-  </fieldset>
+  <!-- ── Main view ─────────────────────────────────────────────────────────── -->
+  <main id="mainView">
+    <section class="card stepper-card">
+      <ol class="stepper" id="stepper">
+        <li data-step="inspect"><span class="dot"><svg><use href="#i-check"/></svg></span><span>Inspect</span></li>
+        <li data-step="explain"><span class="dot"><svg><use href="#i-check"/></svg></span><span>Explain</span></li>
+        <li data-step="fix"><span class="dot"><svg><use href="#i-check"/></svg></span><span>Fix</span></li>
+        <li data-step="verify"><span class="dot"><svg><use href="#i-check"/></svg></span><span>Verify</span></li>
+      </ol>
+      <p id="status" class="status">Ready</p>
+    </section>
 
-  <details id="settings">
-    <summary>Settings</summary>
-    <h3>Cloud: Muse Spark</h3>
-    <label>Meta API key <input id="apiKey" type="password" autocomplete="off"></label>
-    <label>Model <input id="model" value="muse-spark-1.1"></label>
-    <label>API base URL <input id="baseUrl" value="https://api.meta.ai/v1"></label>
-    <h3>Local: Muse Glimmer</h3>
-    <label>Server URL <input id="localUrl" value="http://127.0.0.1:8080/v1"></label>
-    <label>Model name <input id="localModel" value="muse-glimmer"></label>
-    <label>Server key (optional) <input id="localKey" type="password" autocomplete="off"></label>
-    <h3>Bridge: edits your source files</h3>
-    <label>Bridge address <input id="bridgeUrl" value="ws://127.0.0.1:7777"></label>
-    <label>Pairing token <input id="bridgeToken" autocomplete="off" placeholder="shown in the bridge terminal"></label>
-    <h3>Figma design</h3>
-    <label>Figma link (right-click a frame → Copy link to selection) <input id="figmaUrl" autocomplete="off" placeholder="https://www.figma.com/design/…?node-id=…"></label>
-    <label>Figma personal access token <input id="figmaToken" type="password" autocomplete="off"></label>
-    <button id="loadFigma" class="secondary">Load design</button>
-    <h3>Privacy</h3>
-    <label class="check"><input id="allowEscalation" type="checkbox"> In Auto mode, allow sending page details to Muse Spark when the local model can't verify a fix</label>
-    <div class="row">
-      <button id="save">Save</button>
-      <button id="test" class="secondary">Test current mode</button>
+    <section class="card element-card">
+      <div class="card-head">
+        <span class="pill"><svg><use href="#i-cursor"/></svg>Selected Element</span>
+        <button id="countBtn" class="count-btn" hidden aria-expanded="false"><span id="countText">1 element</span><svg><use href="#i-chevron"/></svg></button>
+      </div>
+
+      <div id="emptySelection" class="empty">
+        <p>Pick what looks wrong on the page. Shift+click adds more; ↑ while hovering selects the whole block.</p>
+      </div>
+
+      <div id="elementRow" class="element-row" hidden>
+        <div class="thumb" aria-hidden="true"><span></span></div>
+        <div class="element-meta">
+          <div class="element-title"><strong id="elName">Element</strong><code id="elClass" class="class-pill"></code></div>
+          <p id="elWhere" class="where"></p>
+        </div>
+      </div>
+      <ol id="selection" class="selection" hidden></ol>
+
+      <div class="row">
+        <button id="pick" class="btn">Pick elements</button>
+        <button id="clearSelection" class="btn ghost" hidden>Clear</button>
+      </div>
+
+      <div id="causeBlock" class="cause" hidden>
+        <div class="cause-icon"><svg><use href="#i-bulb"/></svg></div>
+        <div class="cause-text">
+          <div class="cause-head"><h3>Root Cause</h3><button id="viewCode" class="btn ghost small">View Code<svg><use href="#i-external"/></svg></button></div>
+          <p id="causeText"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card ask-card">
+      <div id="sessionHead" class="card-head" hidden>
+        <h2>Session <span id="turnCount" class="hint"></span></h2>
+        <button id="newSession" class="btn ghost small">New session</button>
+      </div>
+      <ol id="thread" class="thread" hidden></ol>
+      <div class="ask-row">
+        <textarea id="goal" rows="2" placeholder="What's wrong? e.g. &quot;padding should be 24px like the other cards&quot;"></textarea>
+        <button id="run" class="btn primary" disabled>Fix it</button>
+      </div>
+    </section>
+
+    <section id="previewCard" class="card" hidden>
+      <div class="card-head">
+        <h2><svg><use href="#i-monitor"/></svg>Live Preview</h2>
+        <div class="segmented" role="group" aria-label="Show">
+          <button id="showOriginal" aria-pressed="false">Original</button>
+          <button id="showChanges" aria-pressed="true">Changes</button>
+        </div>
+      </div>
+      <div class="shots">
+        <figure><figcaption>Before</figcaption><div class="shot"><img id="shotBefore" alt="Element before the fix"><span id="badgeBefore" class="badge bad" hidden></span></div></figure>
+        <span class="shot-arrow" aria-hidden="true"><svg><use href="#i-arrow"/></svg></span>
+        <figure><figcaption class="after">After</figcaption><div class="shot"><img id="shotAfter" alt="Element after the fix"><span id="badgeAfter" class="badge good" hidden></span></div></figure>
+      </div>
+      <p id="shotNote" class="hint" hidden></p>
+    </section>
+
+    <section id="checksCard" class="card" hidden>
+      <div class="card-head">
+        <h2><svg class="ok-icon"><use href="#i-check-circle"/></svg>Checks <span id="checksCount" class="count"></span></h2>
+        <button id="viewDetails" class="btn ghost small">View Details<svg><use href="#i-arrow"/></svg></button>
+      </div>
+      <ul id="checksList" class="checks"></ul>
+      <p id="warnNote" class="hint" hidden></p>
+    </section>
+
+    <section id="diffCard" class="card" hidden>
+      <div class="card-head"><h2><svg><use href="#i-code"/></svg>Code change</h2></div>
+      <div id="edits" class="edits"></div>
+      <p id="applyNote" class="hint"></p>
+    </section>
+
+    <div id="actionBar" class="action-bar" hidden>
+      <button id="discard" class="btn ghost"><svg><use href="#i-undo"/></svg>Discard</button>
+      <button id="applyCode" class="btn apply" disabled><svg><use href="#i-check"/></svg>Apply Fix</button>
+      <button id="toggleDiff" class="btn ghost icon-only" title="Show the code change" aria-label="Show the code change" aria-pressed="false"><svg><use href="#i-code"/></svg></button>
     </div>
-  </details>
 
-  <p id="figmaStatus" class="hint">No Figma design loaded</p>
+    <section id="applied" class="card applied" hidden>
+      <div class="card-head"><h2><svg class="ok-icon"><use href="#i-check-circle"/></svg>Applied to code</h2></div>
+      <p id="appliedSummary" class="hint"></p>
+      <div class="row">
+        <button id="openEditor" class="btn ghost">Open in VS Code</button>
+        <button id="undoCode" class="btn ghost danger">Undo code change</button>
+      </div>
+    </section>
 
-  <section class="pick">
-    <button id="pick">Pick elements</button>
-    <p class="hint">Click to select · Shift+click to add more · ↑ while hovering selects the parent block · Esc to stop</p>
-    <ol id="selection" class="selection" hidden></ol>
-  </section>
+    <section id="traceCard" class="card" hidden>
+      <div class="card-head"><h2>Agent trace</h2><button id="hideTrace" class="btn ghost small">Hide</button></div>
+      <ol id="trace" class="trace"></ol>
+    </section>
+  </main>
 
-  <section class="ask">
-    <textarea id="goal" rows="3" placeholder="What's wrong? e.g. &quot;this button should be centered in the card&quot;"></textarea>
-    <button id="run" disabled>Fix it</button>
-  </section>
+  <!-- ── Settings view ─────────────────────────────────────────────────────── -->
+  <main id="settingsView" hidden>
+    <button id="closeSettings" class="btn ghost small back"><svg><use href="#i-back"/></svg>Back</button>
 
-  <section id="review" class="review" hidden>
-    <h2>Review the changes</h2>
-    <div class="row">
-      <button id="toggleView" class="secondary" aria-pressed="false">Show original</button>
-      <button id="discard" class="secondary danger">Discard</button>
-    </div>
-    <div id="edits" class="edits"></div>
-    <button id="applyCode" disabled>Apply to code</button>
-    <p id="applyNote" class="hint"></p>
-  </section>
+    <section class="card">
+      <h2>Model</h2>
+      <fieldset class="mode">
+        <legend class="sr-only">Model</legend>
+        <label><input type="radio" name="mode" value="local"> Local <span>Muse Glimmer on this laptop</span></label>
+        <label><input type="radio" name="mode" value="auto"> Auto <span>local first, cloud if it can't verify</span></label>
+        <label><input type="radio" name="mode" value="cloud" checked> Cloud <span>Muse Spark</span></label>
+      </fieldset>
+    </section>
 
-  <section id="applied" class="review" hidden>
-    <h2>Applied to code</h2>
-    <p id="appliedSummary" class="hint"></p>
-    <div class="row">
-      <button id="openEditor" class="secondary">Open in VS Code</button>
-      <button id="undoCode" class="secondary danger">Undo code change</button>
-    </div>
-  </section>
+    <section class="card fields">
+      <h3>Cloud: Muse Spark</h3>
+      <label>Meta API key <input id="apiKey" type="password" autocomplete="off"></label>
+      <label>Model <input id="model" value="muse-spark-1.1"></label>
+      <label>API base URL <input id="baseUrl" value="https://api.meta.ai/v1"></label>
 
-  <section>
-    <h2>Agent trace</h2>
-    <ol id="trace" class="trace"></ol>
-  </section>
+      <h3>Local: Muse Glimmer</h3>
+      <label>Server URL <input id="localUrl" value="http://127.0.0.1:8080/v1"></label>
+      <label>Model name <input id="localModel" value="muse-glimmer"></label>
+      <label>Server key (optional) <input id="localKey" type="password" autocomplete="off"></label>
+
+      <h3>Bridge: edits your source files</h3>
+      <label>Bridge address <input id="bridgeUrl" value="ws://127.0.0.1:7777"></label>
+      <label>Pairing token <input id="bridgeToken" autocomplete="off" placeholder="shown in the bridge terminal"></label>
+
+      <h3>Figma design</h3>
+      <label>Figma link (right-click a frame → Copy link to selection) <input id="figmaUrl" autocomplete="off" placeholder="https://www.figma.com/design/…?node-id=…"></label>
+      <label>Figma personal access token <input id="figmaToken" type="password" autocomplete="off"></label>
+      <button id="loadFigma" class="btn ghost">Load design</button>
+      <p id="figmaStatus" class="hint">No Figma design loaded</p>
+
+      <h3>Privacy</h3>
+      <label class="check"><input id="allowEscalation" type="checkbox"> In Auto mode, allow sending page details to Muse Spark when the local model can't verify a fix</label>
+
+      <div class="row">
+        <button id="save" class="btn primary">Save</button>
+        <button id="test" class="btn ghost">Test current mode</button>
+      </div>
+      <p id="settingsStatus" class="hint"></p>
+    </section>
+  </main>
+
+  <footer id="footer" class="footer">
+    <svg class="shield"><use href="#i-shield"/></svg>
+    <span id="footerText">Nothing changed yet</span>
+    <span class="devices" aria-hidden="true">
+      <svg id="dev375"><use href="#i-phone"/></svg><svg id="dev768"><use href="#i-tablet"/></svg><svg id="dev1280"><use href="#i-monitor"/></svg>
+    </span>
+  </footer>
 
   <script type="module" src="sidepanel.js"></script>
 </body>

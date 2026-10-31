@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // pixelPerfect bridge: lets the extension find, read and edit source files in ONE project folder.
 //
-//   node bridge/index.js ./demo-app
+// Two ways to run it:
+//   node bridge/index.js ./demo-app          (standalone, prints a pairing token)
+//   the Vite plugin starts it with `npm run dev` and pairs the extension automatically
 //
 // Safety:
 // - listens on 127.0.0.1 only, and accepts connections only from Chrome extensions
@@ -14,10 +16,10 @@ import fss from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import os from 'node:os';
 
-const ROOT = fss.realpathSync(path.resolve(process.argv[2] || '.'));
-const PORT = Number(process.env.PP_PORT || 7777);
-const TOKEN = process.env.PP_TOKEN || crypto.randomBytes(4).toString('hex');
+let ROOT = null;   // set by startBridge
 const EXTS = new Set(['.css', '.scss', '.sass', '.less', '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.vue', '.svelte', '.html']);
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.nuxt', 'coverage', '.vite', '.turbo']);
 const MAX_FILE = 1024 * 1024;
@@ -158,49 +160,87 @@ const actions = {
   async open_in_editor({ file, line = 1 }) {
     const { abs, rel } = resolveInRoot(file);
     const editor = process.env.PP_EDITOR || 'code';
-    await new Promise((resolve, reject) => {
-      const child = spawn(editor, ['-g', `${abs}:${Number(line) || 1}`], { stdio: 'ignore', detached: true });
-      child.on('error', () => reject(new Error(`Could not run "${editor}". In VS Code, run "Shell Command: Install 'code' command in PATH".`)));
-      child.on('spawn', () => { child.unref(); resolve(); });
+    const at = `${abs}:${Number(line) || 1}`;
+    const started = await new Promise((resolve) => {
+      const child = spawn(editor, ['-g', at], { stdio: 'ignore', detached: true });
+      child.on('error', () => resolve(false));
+      child.on('spawn', () => { child.unref(); resolve(true); });
     });
-    return { opened: `${rel}:${line}` };
+    if (started) return { opened: `${rel}:${line}` };
+    // No "code" command on PATH: let the extension open VS Code through its URL handler instead.
+    return { opened: false, fallbackUrl: `vscode://file${abs.startsWith('/') ? '' : '/'}${abs.split(path.sep).join('/')}:${Number(line) || 1}`, hint: `"${editor}" is not on PATH. In VS Code, run "Shell Command: Install 'code' command in PATH" for a smoother open.` };
   }
 };
 
 // ── Server ───────────────────────────────────────────────────────────────────
-const wss = new WebSocketServer({
-  host: '127.0.0.1',
-  port: PORT,
-  verifyClient: ({ origin }) => {
-    const ok = typeof origin === 'string' && origin.startsWith('chrome-extension://');
-    if (!ok) console.warn(`[bridge] refused a connection from origin: ${origin || '(none)'}`);
-    return ok;
-  }
-});
+// Starts the bridge for one project folder. Resolves with { url, token, close } once listening.
+export function startBridge({ root, port = 7777, token = crypto.randomBytes(4).toString('hex'), log = console } = {}) {
+  ROOT = fss.realpathSync(path.resolve(root || '.'));
+  history.length = 0;
+  return new Promise((resolve, reject) => {
+    const wss = new WebSocketServer({
+      host: '127.0.0.1',
+      port,
+      verifyClient: ({ origin }) => {
+        const ok = typeof origin === 'string' && origin.startsWith('chrome-extension://');
+        if (!ok) log.warn(`[pixelPerfect bridge] refused a connection from origin: ${origin || '(none)'}`);
+        return ok;
+      }
+    });
 
-wss.on('connection', (ws) => {
-  console.log('[bridge] extension connected');
-  ws.on('message', async (raw) => {
-    let msg = {};
-    try { msg = JSON.parse(raw.toString()); } catch { return; }
-    const reply = (body) => ws.send(JSON.stringify({ id: msg.id, ...body }));
-    if (msg.token !== TOKEN) return reply({ ok: false, error: 'Wrong pairing token. Copy it from the bridge terminal into pixelPerfect Settings.' });
-    const fn = actions[msg.action];
-    if (!fn) return reply({ ok: false, error: `Unknown action "${msg.action}".` });
-    try {
-      const result = await fn(msg.args || {});
-      if (['apply_edits', 'undo'].includes(msg.action)) console.log(`[bridge] ${msg.action}:`, JSON.stringify(result));
-      reply({ ok: true, result });
-    } catch (err) {
-      reply({ ok: false, error: err.message });
-    }
+    wss.on('connection', (ws) => {
+      log.info('[pixelPerfect bridge] extension connected');
+      ws.on('message', async (raw) => {
+        let msg = {};
+        try { msg = JSON.parse(raw.toString()); } catch { return; }
+        const reply = (body) => ws.send(JSON.stringify({ id: msg.id, ...body }));
+        if (msg.token !== token) return reply({ ok: false, error: 'Wrong pairing token. Copy it from the bridge terminal into pixelPerfect Settings, or pick an element again to pair automatically.' });
+        const fn = actions[msg.action];
+        if (!fn) return reply({ ok: false, error: `Unknown action "${msg.action}".` });
+        try {
+          const result = await fn(msg.args || {});
+          if (['apply_edits', 'undo'].includes(msg.action)) log.info(`[pixelPerfect bridge] ${msg.action}: ${JSON.stringify(result)}`);
+          reply({ ok: true, result });
+        } catch (err) {
+          reply({ ok: false, error: err.message });
+        }
+      });
+    });
+
+    wss.on('listening', () => resolve({ url: `ws://127.0.0.1:${port}`, token, root: ROOT, close: () => new Promise((r) => wss.close(() => r())) }));
+    wss.on('error', reject);
   });
-});
+}
 
-wss.on('listening', () => {
-  console.log(`\npixelPerfect bridge`);
-  console.log(`  project : ${ROOT}`);
-  console.log(`  address : ws://127.0.0.1:${PORT}`);
-  console.log(`  token   : ${TOKEN}   ← paste this into pixelPerfect Settings\n`);
-});
-wss.on('error', (err) => { console.error(`[bridge] ${err.message}`); process.exit(1); });
+// ── Pairing token that stays the same ────────────────────────────────────────
+// Saved in ~/.pixelperfect/bridge-token (readable only by you), so you paste it into the extension once.
+export function savedToken() {
+  if (process.env.PP_TOKEN) return process.env.PP_TOKEN;
+  const dir = path.join(os.homedir(), '.pixelperfect');
+  const file = path.join(dir, 'bridge-token');
+  try {
+    const existing = fss.readFileSync(file, 'utf8').trim();
+    if (/^[a-f0-9]{16,64}$/.test(existing)) return existing;
+  } catch { /* first run */ }
+  const token = crypto.randomBytes(8).toString('hex');
+  fss.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fss.writeFileSync(file, token + '\n', { mode: 0o600 });
+  return token;
+}
+
+// ── Command line ─────────────────────────────────────────────────────────────
+const runDirectly = process.argv[1] && fileURLToPath(import.meta.url) === fss.realpathSync(path.resolve(process.argv[1]));
+if (runDirectly) {
+  startBridge({ root: process.argv[2] || '.', port: Number(process.env.PP_PORT || 7777), token: savedToken() })
+    .then(({ url, token, root }) => {
+      console.log(`\npixelPerfect bridge`);
+      console.log(`  project : ${root}`);
+      console.log(`  address : ${url}`);
+      console.log(`  token   : ${token}   (saved in ~/.pixelperfect; paste it into pixelPerfect Settings once)\n`);
+    })
+    .catch((err) => {
+      const msg = err.code === 'EADDRINUSE' ? `port ${err.port || 7777} is already in use. Is another bridge (or npm run dev with the pixelPerfect plugin) running?` : err.message;
+      console.error(`[pixelPerfect bridge] ${msg}`);
+      process.exit(1);
+    });
+}

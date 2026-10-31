@@ -49,30 +49,56 @@ function textsIn(node, acc = []) {
 }
 
 const norm = (s) => String(s).toLowerCase().replace(/\s+/g, ' ').trim();
+// Texts compared loosely: case, spacing, quotes and punctuation ignored.
+const loose = (s) => norm(s).replace(/[\u2018\u2019\u201c\u201d'"`]/g, '').replace(/[^\p{L}\p{N}%$.,]+/gu, ' ').trim();
+const tokens = (t) => t.split(/\s+/).map((w) => w.replace(/[.,]+$/, '')).filter((w) => w.length > 1);
+const GENERIC = new Set(['group', 'frame', 'rectangle', 'auto', 'layout', 'container', 'wrapper', 'div', 'vector', 'copy']);
 const words = (s) => String(s).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1);
 
 // ── Matching ─────────────────────────────────────────────────────────────────
 // features: { texts: [...], classes: [...], component, width, height }
 export function matchElement(features) {
   if (!design) throw new Error('No Figma design loaded.');
-  const elTexts = new Set(features.texts.map(norm));
+  const elTexts = [...new Set(features.texts.map(loose).filter(Boolean))];
   const elWords = new Set([...features.classes.flatMap(words), ...words(features.component || '')]);
+  const same = (a, b) => a === b || (a.length > 3 && b.length > 3 && (a.includes(b) || b.includes(a)));
+  const rootId = design.components[0]?.id;
 
   const scored = design.components.map((c) => {
-    // Text: how many of the design's texts appear in the element, and vice versa.
-    const designTexts = [...new Set(c.texts)];
-    const hit = designTexts.filter((t) => elTexts.has(t) || [...elTexts].some((e) => e.includes(t) && t.length > 3)).length;
-    const textScore = designTexts.length && elTexts.size
-      ? (hit / designTexts.length) * 0.5 + (hit / elTexts.size) * 0.5
-      : 0;
+    // Text, as an F1 score: the design node's texts should be in the element (precision) AND the
+    // element's texts should be in the design node (recall). A parent frame contains every text,
+    // so recall alone would always pick the whole page.
+    const designTexts = [...new Set(c.texts.map(loose).filter(Boolean))];
+    const precHit = designTexts.filter((t) => elTexts.some((e) => same(e, t))).length;
+    const recHit = elTexts.filter((e) => designTexts.some((t) => same(e, t))).length;
+    const precision = designTexts.length ? precHit / designTexts.length : 0;
+    const recall = elTexts.length ? recHit / elTexts.length : 0;
+    const stringF1 = precision + recall ? (2 * precision * recall) / (precision + recall) : 0;
+    // Same idea on words, so text split into lines, re-wrapped or slightly edited still matches.
+    const dW = new Set(designTexts.flatMap(tokens));
+    const eW = new Set(elTexts.flatMap(tokens));
+    const common = [...dW].filter((w) => eW.has(w)).length;
+    const wp = dW.size ? common / dW.size : 0;
+    const wr = eW.size ? common / eW.size : 0;
+    const wordF1 = wp + wr ? (2 * wp * wr) / (wp + wr) : 0;
+    const textScore = Math.max(stringF1, wordF1);
     // Name: words in the Figma layer name vs class names and component name.
-    const nameWords = words(c.name);
+    const nameWords = words(c.name).filter((w) => !GENERIC.has(w));
     const nameScore = nameWords.length ? nameWords.filter((w) => elWords.has(w)).length / nameWords.length : 0;
     // Size: similar width and height.
     const ratio = (a, b) => (a && b ? Math.min(a, b) / Math.max(a, b) : 0);
     const sizeScore = (ratio(c.box.width, features.width) + ratio(c.box.height, features.height)) / 2;
-    const score = textScore * 0.6 + nameScore * 0.25 + sizeScore * 0.15;
-    return { id: c.id, name: c.name, score: Math.round(score * 100) / 100, why: { text: `${hit}/${designTexts.length} texts`, name: Math.round(nameScore * 100) / 100, size: Math.round(sizeScore * 100) / 100 } };
+    // Without text or a meaningful name, lean on size.
+    const hasText = designTexts.length && elTexts.length;
+    const score = hasText
+      ? textScore * 0.6 + nameScore * 0.15 + sizeScore * 0.25
+      : nameScore * 0.5 + sizeScore * 0.5;
+    // The loaded frame itself only matches an element of about the same size (the whole page).
+    const penalty = c.id === rootId && sizeScore < 0.8 ? 0.5 : 1;
+    return {
+      id: c.id, name: c.name, score: Math.round(score * penalty * 100) / 100,
+      why: { text: `${precHit}/${designTexts.length} design texts, ${recHit}/${elTexts.length} page texts, words ${Math.round(wordF1 * 100)}%`, name: Math.round(nameScore * 100) / 100, size: Math.round(sizeScore * 100) / 100 }
+    };
   }).sort((a, b) => b.score - a.score);
 
   const [best, second] = scored;
@@ -81,7 +107,7 @@ export function matchElement(features) {
     best: best || null,
     confident,
     candidates: scored.slice(0, 3),
-    note: confident ? undefined : 'Low confidence: confirm the match with the developer before changing anything.'
+    note: confident ? undefined : 'Low confidence: name the candidates and ask the developer to confirm before changing anything. Do not take design values from comments in the code instead.'
   };
 }
 

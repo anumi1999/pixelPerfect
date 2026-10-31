@@ -214,10 +214,13 @@
       const inView = r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
       if (!inView) problems.push('outside the viewport');
       if (!problems.length) {
-        const cx = Math.min(Math.max(r.left + r.width / 2, 0), innerWidth - 1);
-        const cy = Math.min(Math.max(r.top + r.height / 2, 0), innerHeight - 1);
+        // Test the centre of the part that is on screen (a tall block's own centre may be off screen).
+        const cx = (Math.max(r.left, 0) + Math.min(r.right, innerWidth)) / 2;
+        const cy = (Math.max(r.top, 0) + Math.min(r.bottom, innerHeight)) / 2;
         const hit = document.elementFromPoint(cx, cy);
-        if (hit && hit !== el && !el.contains(hit) && !hit.id?.startsWith('__pp')) {
+        // <html>/<body> can't cover a descendant; they show up when the point isn't hit-testable (e.g. pointer-events: none).
+        const root = hit === document.documentElement || hit === document.body;
+        if (hit && !root && hit !== el && !el.contains(hit) && !hit.id?.startsWith('__pp')) {
           problems.push(`covered by <${hit.tagName.toLowerCase()}${hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\s+/).join('.') : ''}>`);
         }
       }
