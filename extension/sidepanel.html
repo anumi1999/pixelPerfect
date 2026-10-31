@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>pixelPerfect</title>
+  <title>Pixel Perfect</title>
   <link rel="stylesheet" href="sidepanel.css">
 </head>
 <body>
@@ -23,13 +23,23 @@
   </details>
 
   <section class="pick">
-    <button id="pick">Pick an element</button>
-    <div id="selection" class="selection" hidden></div>
+    <button id="pick">Pick elements</button>
+    <p class="hint">Click to select · Shift+click to add more · ↑ while hovering selects the parent block · Esc to stop</p>
+    <ol id="selection" class="selection" hidden></ol>
   </section>
 
   <section class="ask">
     <textarea id="goal" rows="3" placeholder="What's wrong? e.g. &quot;this button should be centered in the card&quot;"></textarea>
     <button id="run" disabled>Fix it</button>
+  </section>
+
+  <section id="review" class="review" hidden>
+    <h2>Review the changes</h2>
+    <div class="row">
+      <button id="toggleView" class="secondary" aria-pressed="false">Show original</button>
+      <button id="discard" class="secondary danger">Discard changes</button>
+    </div>
+    <button id="sendCode" disabled title="Coming with the bridge">Apply to code (coming soon)</button>
   </section>
 
   <section>
