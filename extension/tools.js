@@ -1,6 +1,9 @@
 // The tools the agent can call. Each has:
 //  1. a JSON description (so Muse Spark knows when and how to use it)
-//  2. code that runs it (most are forwarded to content.js in the page)
+//  2. code that runs it (page tools go to content.js, code tools go to the local bridge)
+import { bridgeRequest } from './bridge.js';
+import { state } from './state.js';
+import { figmaLoaded, matchElement, specFor } from './figma.js';
 
 const CHECK_SCHEMA = {
   type: 'object',
@@ -74,13 +77,84 @@ export const TOOLS = [
       checks: { type: 'array', items: CHECK_SCHEMA },
       widths: { type: 'array', items: { type: 'number' }, description: 'Viewport widths in px' }
     },
-    ['checks'])
+    ['checks']),
+
+  // ── Design tools (Figma) ──
+  fn('get_figma_match',
+    'Find which component in the loaded Figma design matches a selected element (by its text, names and size). Returns the best match, a confidence flag and the top 3 candidates.',
+    ELEMENT),
+  fn('get_figma_spec',
+    'Get the design values for a Figma component (padding, gaps, corner radius, colours, font sizes and weights) as ready-to-use verify checks. These checks are the acceptance criteria for "match the design".',
+    { figma_id: { type: 'string', description: 'The Figma node id from get_figma_match' } },
+    ['figma_id']),
+
+  // ── Code tools (through the local bridge) ──
+  fn('find_in_source',
+    'Search the project\'s source files for text, e.g. a selector (".product-card.featured"), a class name or a CSS variable. Returns file, line and the matching line. Use when get_matched_rules shows a built file, or to find design tokens.',
+    { query: { type: 'string' } },
+    ['query']),
+  fn('read_file',
+    'Read a source file with line numbers. Always read a file before proposing an edit to it.',
+    { file: { type: 'string', description: 'Path relative to the project, or the path shown by get_matched_rules / data-pp-src' },
+      start_line: { type: 'number' }, end_line: { type: 'number' } },
+    ['file']),
+  fn('propose_source_edit',
+    'Propose a change to a source file. Nothing is written: the developer reviews it and clicks "Apply to code". `find` must be text copied exactly from read_file (without the line numbers) and must appear exactly once in the file.',
+    { file: { type: 'string' },
+      find: { type: 'string', description: 'Exact existing text to replace' },
+      replace: { type: 'string', description: 'New text ("" to delete)' },
+      reason: { type: 'string', description: 'One line: why this change' } },
+    ['file', 'find', 'replace', 'reason']),
+  fn('withdraw_source_edit',
+    'Remove a proposed source edit you no longer want, by its index.',
+    { index: { type: 'number' } },
+    ['index'])
 ];
+
+const BRIDGE_TOOLS = new Set(['find_in_source', 'read_file']);
 
 // Runs a tool by name.
 export async function runTool(tabId, name, args) {
   if (name === 'verify_responsive') return verifyResponsive(tabId, args);
+  if (BRIDGE_TOOLS.has(name)) return viaBridge(name, args);
+  if (name === 'propose_source_edit') return proposeEdit(args);
+  if (name === 'withdraw_source_edit') return withdrawEdit(args);
+  if (name === 'get_figma_match') return figmaMatch(tabId, args);
+  if (name === 'get_figma_spec') return figmaSpec(args);
   return sendToPage(tabId, name, args);
+}
+
+async function figmaMatch(tabId, { element }) {
+  if (!figmaLoaded()) return { error: 'No Figma design is loaded. Ask the developer to add a Figma link in Settings, or work from their description.' };
+  const f = await sendToPage(tabId, 'get_features', { element });
+  if (f.error) return f;
+  try { return matchElement(f); } catch (err) { return { error: err.message }; }
+}
+
+function figmaSpec({ figma_id }) {
+  try { return specFor(figma_id); } catch (err) { return { error: err.message }; }
+}
+
+async function viaBridge(action, args) {
+  try { return await bridgeRequest(action, args); }
+  catch (err) { return { error: err.message, hint: 'If the bridge is not running, give the source fix in your final answer instead.' }; }
+}
+
+async function proposeEdit({ file, find, replace, reason }) {
+  let check;
+  try { check = await bridgeRequest('check_edit', { file, find, replace }); }
+  catch (err) { return { error: err.message }; }
+  if (!check.ok) return { error: check.error, file: check.file };
+  const edit = { file: check.file, find, replace, reason: reason || '', line: check.line, diff: check.diff };
+  const existing = state.pendingEdits.findIndex((e) => e.file === edit.file && e.find === edit.find);
+  if (existing >= 0) state.pendingEdits[existing] = edit; else state.pendingEdits.push(edit);
+  return { proposed: true, index: existing >= 0 ? existing : state.pendingEdits.length - 1, file: edit.file, line: edit.line, diff: edit.diff, totalProposed: state.pendingEdits.length };
+}
+
+function withdrawEdit({ index }) {
+  if (!state.pendingEdits[index]) return { error: `No proposed edit with index ${index}.` };
+  const [removed] = state.pendingEdits.splice(index, 1);
+  return { withdrawn: `${removed.file}:${removed.line}`, totalProposed: state.pendingEdits.length };
 }
 
 async function sendToPage(tabId, name, args) {

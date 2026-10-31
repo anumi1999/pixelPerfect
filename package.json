@@ -1,0 +1,13 @@
+{
+  "name": "pixel-perfect",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "test:watch": "node --test --watch"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}

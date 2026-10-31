@@ -1,0 +1,5 @@
+/* Featured cards get a highlight border. */
+.product-card.featured {
+  border-color: var(--color-primary);
+  padding: 16px;
+}

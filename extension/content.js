@@ -34,6 +34,7 @@ if (!window.__ppContentLoaded) {
       case 'inspect_element': return inspect(el);
       case 'get_structure': return structure(el, args.depth);
       case 'get_matched_rules': return matchedRules(el);
+      case 'get_features': return features(el);
       case 'get_component': return component(el);
       case 'preview_css': return previewCss(el, args.css);
       case 'preview_stylesheet': return previewStylesheet(args.css);
@@ -231,6 +232,26 @@ if (!window.__ppContentLoaded) {
     };
     walk(root, 0);
     return { lines, truncated: lines.length >= 120 };
+  }
+
+  // What a design match needs: visible texts, class names, component name and size.
+  function features(el) {
+    const texts = new Set();
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode() && texts.size < 40) {
+      const t = walker.currentNode.textContent.replace(/\s+/g, ' ').trim();
+      const parent = walker.currentNode.parentElement;
+      if (t && parent && getComputedStyle(parent).display !== 'none') texts.add(t.slice(0, 80));
+    }
+    // Whole text of small inline groups too (e.g. "1–3 of 3" split across nodes).
+    for (const e of [el, ...el.querySelectorAll('*')].slice(0, 200)) {
+      const t = (e.innerText || '').replace(/\s+/g, ' ').trim();
+      if (t && t.length <= 40 && e.children.length && texts.size < 60) texts.add(t);
+    }
+    const classes = new Set();
+    for (const e of [el, ...el.querySelectorAll('[class]')].slice(0, 60)) e.classList.forEach((c) => classes.add(c));
+    const r = el.getBoundingClientRect();
+    return { texts: [...texts], classes: [...classes].slice(0, 40), component: component(el).component || null, width: Math.round(r.width), height: Math.round(r.height) };
   }
 
   // Which stylesheet rules apply to the element, and which file each came from.

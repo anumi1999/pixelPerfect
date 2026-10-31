@@ -1,0 +1,9 @@
+{
+  "name": "pixelperfect-bridge",
+  "version": "0.1.0",
+  "description": "Local bridge that lets the pixelPerfect extension find, read and edit source files in one project folder.",
+  "type": "module",
+  "bin": { "pixelperfect-bridge": "index.js" },
+  "scripts": { "start": "node index.js" },
+  "dependencies": { "ws": "8.18.0" }
+}

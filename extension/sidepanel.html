@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Pixel Perfect</title>
+  <title>pixelPerfect</title>
   <link rel="stylesheet" href="sidepanel.css">
 </head>
 <body>
@@ -11,16 +11,39 @@
     <span id="status" class="status">Not configured</span>
   </header>
 
+  <fieldset class="mode">
+    <legend>Model</legend>
+    <label><input type="radio" name="mode" value="local"> Local <span>Muse Glimmer on this laptop</span></label>
+    <label><input type="radio" name="mode" value="auto"> Auto <span>local first, cloud if it can't verify</span></label>
+    <label><input type="radio" name="mode" value="cloud" checked> Cloud <span>Muse Spark</span></label>
+  </fieldset>
+
   <details id="settings">
     <summary>Settings</summary>
+    <h3>Cloud: Muse Spark</h3>
     <label>Meta API key <input id="apiKey" type="password" autocomplete="off"></label>
     <label>Model <input id="model" value="muse-spark-1.1"></label>
     <label>API base URL <input id="baseUrl" value="https://api.meta.ai/v1"></label>
+    <h3>Local: Muse Glimmer</h3>
+    <label>Server URL <input id="localUrl" value="http://127.0.0.1:8080/v1"></label>
+    <label>Model name <input id="localModel" value="muse-glimmer"></label>
+    <label>Server key (optional) <input id="localKey" type="password" autocomplete="off"></label>
+    <h3>Bridge: edits your source files</h3>
+    <label>Bridge address <input id="bridgeUrl" value="ws://127.0.0.1:7777"></label>
+    <label>Pairing token <input id="bridgeToken" autocomplete="off" placeholder="shown in the bridge terminal"></label>
+    <h3>Figma design</h3>
+    <label>Figma link (right-click a frame → Copy link to selection) <input id="figmaUrl" autocomplete="off" placeholder="https://www.figma.com/design/…?node-id=…"></label>
+    <label>Figma personal access token <input id="figmaToken" type="password" autocomplete="off"></label>
+    <button id="loadFigma" class="secondary">Load design</button>
+    <h3>Privacy</h3>
+    <label class="check"><input id="allowEscalation" type="checkbox"> In Auto mode, allow sending page details to Muse Spark when the local model can't verify a fix</label>
     <div class="row">
       <button id="save">Save</button>
-      <button id="test" class="secondary">Test connection</button>
+      <button id="test" class="secondary">Test current mode</button>
     </div>
   </details>
+
+  <p id="figmaStatus" class="hint">No Figma design loaded</p>
 
   <section class="pick">
     <button id="pick">Pick elements</button>
@@ -37,9 +60,20 @@
     <h2>Review the changes</h2>
     <div class="row">
       <button id="toggleView" class="secondary" aria-pressed="false">Show original</button>
-      <button id="discard" class="secondary danger">Discard changes</button>
+      <button id="discard" class="secondary danger">Discard</button>
     </div>
-    <button id="sendCode" disabled title="Coming with the bridge">Apply to code (coming soon)</button>
+    <div id="edits" class="edits"></div>
+    <button id="applyCode" disabled>Apply to code</button>
+    <p id="applyNote" class="hint"></p>
+  </section>
+
+  <section id="applied" class="review" hidden>
+    <h2>Applied to code</h2>
+    <p id="appliedSummary" class="hint"></p>
+    <div class="row">
+      <button id="openEditor" class="secondary">Open in VS Code</button>
+      <button id="undoCode" class="secondary danger">Undo code change</button>
+    </div>
   </section>
 
   <section>
