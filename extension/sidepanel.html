@@ -25,6 +25,7 @@
       <symbol id="i-tablet" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="2.5" width="14" height="19" rx="2"/><path d="M11 18h2"/></g></symbol>
       <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-undo" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v6h6"/><path d="M4.5 10A8 8 0 1 1 6 17"/></g></symbol>
+      <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
       <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></g></symbol>
       <symbol id="i-code" viewBox="0 0 24 24"><path d="M9 7l-5 5 5 5M15 7l5 5-5 5M13.5 5l-3 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2l8 3v6c0 5-3.4 9.3-8 11-4.6-1.7-8-6-8-11V5z" fill="currentColor"/><path d="M8 12l3 3 5-6" fill="none" stroke="#0e1a14" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
@@ -99,7 +100,10 @@
       <ol id="thread" class="thread" hidden></ol>
       <div class="ask-row">
         <textarea id="goal" rows="2" placeholder="What's wrong? e.g. &quot;padding should be 24px like the other cards&quot;"></textarea>
-        <button id="run" class="btn primary" disabled>Fix it</button>
+        <div class="ask-buttons">
+          <button id="breakIt" class="btn ghost" disabled title="Stress-test the selected block with bad data and small screens, and report what breaks. Nothing is changed.">Break it</button>
+          <button id="run" class="btn primary" disabled>Fix it</button>
+        </div>
       </div>
     </section>
 
@@ -126,6 +130,14 @@
       </div>
       <ul id="checksList" class="checks"></ul>
       <p id="warnNote" class="hint" hidden></p>
+    </section>
+
+    <section id="stressCard" class="card" hidden>
+      <div class="card-head">
+        <h2><svg><use href="#i-bolt"/></svg>Break test <span id="stressCount" class="count"></span></h2>
+      </div>
+      <ul id="stressList" class="stress"></ul>
+      <p class="hint">Every attack was undone after it was measured. Click Show to see one on the page, then ask to fix it, e.g. "fix the long text break".</p>
     </section>
 
     <section id="diffCard" class="card" hidden>

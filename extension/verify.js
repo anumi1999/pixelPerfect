@@ -309,6 +309,10 @@
 
   // ── Entry point ────────────────────────────────────────────────────────────
   // `selected` is the list of picked elements; each check may name one with `element` (index, default 0).
+  // Shared with states.js: find a check's target, and measure text contrast.
+  globalThis.ppResolveTarget = (root, target) => resolveTarget(root, target).el;
+  globalThis.ppContrast = (el) => checks.contrast(el, {});
+
   globalThis.ppVerify = function (selected, list, baseline) {
     const roots = Array.isArray(selected) ? selected : [selected];
     if (!Array.isArray(list) || !list.length) return { error: 'verify needs a non-empty "checks" array.' };

@@ -35,6 +35,7 @@ if (!window.__ppContentLoaded) {
     if (name === 'get_selection') return { elements: selection.map(describe) };
     if (!selection.length || !selection.every((e) => e.isConnected)) return { error: 'No element selected (or the page changed). Ask the developer to pick again.' };
     if (showingOriginal) setPreviewMode('changes');
+    if (name !== 'stress_show') globalThis.ppStressHide?.();   // measure the real page, not a shown attack
     const el = pick(args.element);
     if (!el && name !== 'preview_stylesheet' && name !== 'undo_preview' && name !== 'verify') {
       return { error: `No selected element with index ${args.element}. Valid: 0–${selection.length - 1}.` };
@@ -48,6 +49,21 @@ if (!window.__ppContentLoaded) {
       case 'preview_css': return previewCss(el, args.css);
       case 'preview_stylesheet': return previewStylesheet(args.css);
       case 'undo_preview': return undoPreview();
+      case 'stress_test': return globalThis.ppStress
+        ? globalThis.ppStress(el, args.attacks)
+        : { error: 'stress.js is not loaded. Pick the element again.' };
+      case 'states_prepare': return globalThis.ppStatesPrepare ? globalThis.ppStatesPrepare(el) : { error: 'states.js is not loaded. Pick the element again.' };
+      case 'states_mark': return globalThis.ppStatesMark(el, args.target);
+      case 'states_snapshot': return globalThis.ppStatesSnapshot(el, args.key);
+      case 'states_freeze': return globalThis.ppStatesFreeze(!!args.on);
+      case 'states_disabled': return globalThis.ppStatesDisabled(args.key, !!args.on);
+      case 'states_cleanup': return globalThis.ppStatesCleanup(!!args.keep);
+      case 'stress_scan': return globalThis.ppStressScan
+        ? globalThis.ppStressScan(el)
+        : { error: 'stress.js is not loaded. Pick the element again.' };
+      case 'stress_show': return globalThis.ppStressShow
+        ? globalThis.ppStressShow(el, args.attack || null)
+        : { error: 'stress.js is not loaded. Pick the element again.' };
       case 'verify': return globalThis.ppVerify
         ? globalThis.ppVerify(selection, args.checks, baseline)
         : { error: 'verify.js is not loaded. Pick the element again.' };
@@ -405,6 +421,7 @@ if (!window.__ppContentLoaded) {
   }
 
   function discardAll() {
+    globalThis.ppStressHide?.();
     if (showingOriginal) setPreviewMode('changes');
     originals.forEach((orig, el) => restoreStyle(el, orig));
     originals.clear();

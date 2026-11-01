@@ -2,10 +2,11 @@ import { runAgent, callMuseSpark } from './agent.js';
 import { configureBridge, bridgeRequest } from './bridge.js';
 import { state, resetRun } from './state.js';
 import { loadFigma, figmaSummary, useDesign, parseFigmaUrl } from './figma.js';
-import { sourceStatus } from './tools.js';
+import { sourceStatus, runTool } from './tools.js';
 
 const $ = (id) => document.getElementById(id);
 let tabId = null;
+let shownAttack = null;   // the break-test attack shown on the page right now
 let elements = [];        // descriptions of the picked elements (index = position)
 let running = false;
 
@@ -60,7 +61,9 @@ function updateLastTurn(outcome, kind) {
 }
 
 function resetRunView() {
-  Object.assign(run, { previewed: false, firstFailing: null, lastVerify: null, responsive: null, answer: '', verified: false, previews: [] });
+  Object.assign(run, { previewed: false, firstFailing: null, lastVerify: null, responsive: null, answer: '', verified: false, previews: [], stress: null, firstStress: null, states: null });
+  $('stressCard').hidden = true;
+  shownAttack = null;
   for (const id of ['causeBlock', 'previewCard', 'checksCard', 'diffCard', 'actionBar', 'applied']) $(id).hidden = true;
   $('shotBefore').removeAttribute('src');
   $('shotAfter').removeAttribute('src');
@@ -204,7 +207,7 @@ const STAGE_OF = {
   inspect_element: 'inspect', get_structure: 'inspect', get_component: 'inspect', get_figma_match: 'inspect',
   get_matched_rules: 'explain', find_in_source: 'explain', read_file: 'explain', get_figma_spec: 'explain',
   preview_css: 'fix', preview_stylesheet: 'fix', undo_preview: 'fix', propose_source_edit: 'fix', withdraw_source_edit: 'fix',
-  verify: 'verify', verify_responsive: 'verify'
+  verify: 'verify', verify_responsive: 'verify', stress_test: 'verify', check_states: 'verify'
 };
 
 // stage: one of STEPS, 'finished', 'failed' or null (reset)
@@ -226,7 +229,7 @@ $('pick').addEventListener('click', async () => {
   tabId = tab.id;
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['page-main.js'], world: 'MAIN' });
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['verify.js', 'content.js'] });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['verify.js', 'stress.js', 'states.js', 'content.js'] });
     await chrome.tabs.sendMessage(tabId, { type: 'PP_PICK' });
     $('pick').textContent = 'Picking… (Esc to stop)';
   } catch (err) {
@@ -315,7 +318,15 @@ $('clearSelection').addEventListener('click', clearSelection);
 // ── Running the agent ─────────────────────────────────────────────────────────
 function updateRunButton() {
   $('run').disabled = running || !elements.length || !ready();
+  $('breakIt').disabled = $('run').disabled;
 }
+
+// "Break it": the same agent, asked to stress-test instead of fix.
+$('breakIt').addEventListener('click', () => {
+  const extra = $('goal').value.trim();
+  $('goal').value = `Break it: stress-test the selected block and report what breaks. Do not fix anything yet.${extra ? ` Focus: ${extra}` : ''}`;
+  $('run').click();
+});
 
 $('goal').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) $('run').click();
@@ -420,10 +431,20 @@ async function showResult() {
   setPreviewButtons(false);
 
   // Stepper, status and footer.
-  if (run.verified) setStepper('finished'); else if (run.lastVerify || run.responsive) setStepper('failed');
+  if (run.verified) setStepper('finished'); else if (run.lastVerify || run.responsive || run.stress) setStepper('failed');
   const responsiveOk = run.responsive?.allPass === true;
   let summary;
-  if (alreadyMet) { setStatus('Already matches. Nothing to change', 'ok'); setFooter('already'); summary = { outcome: 'Already matches, nothing changed', kind: 'ok' }; }
+  const breakOnly = (run.stress || run.states) && !run.previewed && !edits.length;
+  if (breakOnly) {
+    const all = breakResults();
+    const broke = all.filter((r) => !r.held);
+    const tried = all.filter((r) => r.applicable).length;
+    if (broke.length) { setStatus(`${broke.length} of ${tried} tests found problems: see Break test`, 'bad'); setFooter('broken'); }
+    else { setStatus(`Held up in all ${tried} tests`, 'ok'); setFooter('held'); }
+    setStepper(broke.length ? 'failed' : 'finished');
+    summary = { outcome: broke.length ? `Break test: ${broke.length} problem${broke.length === 1 ? '' : 's'} (${broke.slice(0, 2).map((r) => r.label.replace(/<[^>]*>\s*/, '')).join(', ')}${broke.length > 2 ? '…' : ''})` : `Break test: held up in all ${tried} tests`, kind: broke.length ? 'bad' : 'ok' };
+  }
+  else if (alreadyMet) { setStatus('Already matches. Nothing to change', 'ok'); setFooter('already'); summary = { outcome: 'Already matches, nothing changed', kind: 'ok' }; }
   else if (run.verified && responsiveOk) { setStatus('Fix ready to apply', 'ok'); setFooter('verified-all'); summary = { outcome: `Verified fix${edits.length ? ` ready: ${edits[0].file.split('/').pop()}` : ''}`, kind: 'ok' }; }
   else if (run.verified) { setStatus('Fix ready to apply', 'ok'); setFooter('verified-one'); summary = { outcome: `Verified fix${edits.length ? ` ready: ${edits[0].file.split('/').pop()}` : ''}`, kind: 'ok' }; }
   else if (run.lastVerify) { setStatus('Not verified: see Checks', 'bad'); setFooter('failed'); summary = { outcome: 'Not verified', kind: 'bad' }; }
@@ -488,6 +509,53 @@ function checkItems(result) {
   return items;
 }
 
+// Break test results, with a Show button that puts one attack on the page so you can see it.
+const breakResults = () => [...(run.stress?.results || []), ...(run.states?.results || [])];
+const SHOWABLE = new Set(['long_text', 'long_word', 'big_numbers', 'empty', 'many_items', 'big_font', 'narrow', 'rtl']);
+
+function renderStress() {
+  const all = breakResults();
+  $('stressCard').hidden = !all.length;
+  if (!all.length) return;
+  const r = { results: all };
+  const tried = r.results.filter((x) => x.applicable);
+  const held = tried.filter((x) => x.held).length;
+  $('stressCount').textContent = `${held} / ${tried.length} held`;
+  $('stressCount').className = `count${held === tried.length ? '' : ' bad'}`;
+  const order = [...r.results].sort((a, b) => (a.held - b.held) || (b.applicable - a.applicable));
+  $('stressList').replaceChildren(...order.map((x) => {
+    const li = document.createElement('li');
+    li.className = !x.applicable ? 'na' : x.held ? 'held' : 'broke';
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<svg class="state"><use href="#${!x.applicable || x.held ? 'i-check-circle' : 'i-x-circle'}"/></svg><span class="name"></span>`;
+    row.querySelector('.name').textContent = x.label + (!x.applicable ? ' (not applicable)' : x.error ? ` (${x.error})` : '');
+    if (x.applicable && SHOWABLE.has(x.attack) && run.stress?.results.includes(x)) {
+      const btn = document.createElement('button');
+      btn.className = 'btn ghost small show';
+      btn.textContent = shownAttack === x.attack ? 'Hide' : 'Show';
+      btn.setAttribute('aria-pressed', String(shownAttack === x.attack));
+      btn.addEventListener('click', async () => {
+        const next = shownAttack === x.attack ? null : x.attack;
+        const res = await sendToPage({ type: 'PP_TOOL', name: 'stress_show', args: { attack: next } });
+        if (res?.error) { addTrace('error', 'Could not show the attack', res.error); return; }
+        shownAttack = next;
+        renderStress();
+      });
+      row.appendChild(btn);
+    }
+    li.appendChild(row);
+    const lines = [...(x.problems || []), ...(!x.problems?.length && x.changes?.length ? [`changes: ${x.changes.slice(0, 3).join('; ')}`] : [])];
+    if (lines.length) {
+      const ul = document.createElement('ul');
+      ul.className = 'problems';
+      for (const p of lines.slice(0, 4)) { const i = document.createElement('li'); i.textContent = p; ul.appendChild(i); }
+      li.appendChild(ul);
+    }
+    return li;
+  }));
+}
+
 function renderChecks() {
   const items = run.lastVerify ? checkItems(run.lastVerify) : [];
   if (run.responsive) items.push({ label: 'Responsive', pass: run.responsive.allPass === true });
@@ -515,7 +583,7 @@ $('hideTrace').addEventListener('click', () => { $('traceCard').hidden = true; }
 // Footer
 function setFooter(kind) {
   const f = $('footer');
-  f.className = 'footer' + (['verified-all', 'verified-one', 'already', 'applied'].includes(kind) ? ' verified' : kind === 'failed' || kind === 'applied-failed' ? ' failed' : '');
+  f.className = 'footer' + (['verified-all', 'verified-one', 'already', 'applied', 'held'].includes(kind) ? ' verified' : ['failed', 'applied-failed', 'broken'].includes(kind) ? ' failed' : '');
   const text = {
     idle: 'Nothing changed yet',
     working: 'Working…',
@@ -524,7 +592,9 @@ function setFooter(kind) {
     'verified-one': `Fix verified at this screen size`,
     failed: 'Not verified yet',
     applied: 'Applied and re-verified on your code',
-    'applied-failed': 'Applied, but the real code fails a check'
+    'applied-failed': 'Applied, but the real code fails a check',
+    broken: 'Break test found problems. Nothing was changed',
+    held: 'Break test passed. Nothing was changed'
   }[kind] || '';
   $('footerText').textContent = text + (kind === 'verified-all' || kind === 'applied' ? ' ✓' : '');
   for (const w of [375, 768, 1280]) {
@@ -695,7 +765,13 @@ $('applyCode').addEventListener('click', async () => {
 
 async function reverify() {
   const checks = state.lastPassingChecks;
-  if (!checks) { setStatus('Applied. No checks to re-run', ''); return false; }
+  const stressOk = await rerunStress();
+  if (!checks) {
+    if (stressOk === null) { setStatus('Applied. No checks to re-run', ''); return false; }
+    setStatus(stressOk ? 'Applied, and the break test still holds on your code' : 'Applied, but the break test fails on the real code', stressOk ? 'ok' : 'bad');
+    return stressOk;
+  }
+  if (stressOk === false) { setStatus('Applied, but the break test fails on the real code', 'bad'); return false; }
   const v = await sendToPage({ type: 'PP_TOOL', name: 'verify', args: { checks } });
   if (!v || v.error) {
     addTrace('fail', 'Re-check on the real code could not run', v?.error || 'The page did not answer. If it fully reloaded, pick the element again.');
@@ -707,6 +783,17 @@ async function reverify() {
   addTrace(v.allPass ? 'pass' : 'fail', v.allPass ? 'Re-checked on the real code: all checks pass ✓' : 'Re-checked on the real code: some checks fail', v.results.map((r) => r.line).join('\n'));
   setStatus(v.allPass ? 'Applied and verified on your code' : 'Applied, but checks fail on the real code', v.allPass ? 'ok' : 'bad');
   return v.allPass;
+}
+
+// After Apply: run the attacks that held in the preview again, on the real code.
+async function rerunStress() {
+  if (!state.lastStress) return null;
+  const r = await runTool(tabId, 'stress_test', state.lastStress);
+  if (!r || r.error) { addTrace('fail', 'Break test could not re-run on the real code', r?.error || 'No answer from the page.'); return false; }
+  run.stress = r;
+  renderStress();
+  addTrace(r.allPass ? 'pass' : 'fail', `Break test on the real code: ${r.summary}`, r.results.filter((x) => !x.held).map((x) => `✗ ${x.label}: ${x.problems.join('; ')}`).join('\n'));
+  return r.allPass;
 }
 
 $('undoCode').addEventListener('click', async () => {
@@ -761,6 +848,13 @@ function onStep(s) {
     if (s.result.allPass && !s.result.checksChanged && lastArgs.verify?.checks) state.lastPassingChecks = lastArgs.verify.checks;
   }
   if (s.kind === 'result' && s.name === 'verify_responsive' && s.result?.byWidth) run.responsive = s.result;
+  if (s.kind === 'result' && s.name === 'check_states' && s.result?.results) { run.states = s.result; renderStress(); }
+  if (s.kind === 'result' && s.name === 'stress_test' && s.result?.results) {
+    if (!run.firstStress) run.firstStress = s.result;
+    run.stress = s.result;
+    if (s.result.allPass && lastArgs.stress_test) state.lastStress = lastArgs.stress_test;
+    renderStress();
+  }
   // Mirror the previews on the page, so "Copy CSS" gives exactly what is applied now.
   if (s.kind === 'result' && !s.result?.error) {
     run.previews ||= [];
@@ -783,6 +877,12 @@ function onStep(s) {
     const lines = s.result.results.map((r) => r.line);
     if (s.result.warnings?.length) lines.push('', 'Nearby changes:', ...s.result.warnings.map((w) => `⚠ ${w}`));
     addTrace(s.result.allPass ? 'pass' : 'fail', `← verify: ${s.result.allPass ? 'all checks pass' : 'some checks fail'}`, lines.join('\n'));
+  } else if (s.kind === 'result' && s.name === 'check_states' && s.result?.results) {
+    const lines = s.result.results.map((r) => `${r.held ? '✓' : '✗'} ${r.label}${r.changes?.length ? `  (${r.changes.join('; ')})` : ''}${r.problems?.length ? '\n   ' + r.problems.join('\n   ') : ''}`);
+    addTrace(s.result.allPass ? 'pass' : 'fail', `← states: ${s.result.summary}`, lines.join('\n'));
+  } else if (s.kind === 'result' && s.name === 'stress_test' && s.result?.results) {
+    const lines = s.result.results.map((r) => `${!r.applicable ? '–' : r.held ? '✓' : '✗'} ${r.label}${r.problems?.length ? '\n   ' + r.problems.join('\n   ') : ''}`);
+    addTrace(s.result.allPass ? 'pass' : 'fail', `← break test: ${s.result.summary}`, lines.join('\n'));
   } else if (s.kind === 'result' && s.name === 'verify_responsive' && s.result?.byWidth) {
     const lines = s.result.byWidth.flatMap((w) => [`${w.allPass ? '✓' : '✗'} ${w.width}px`, ...w.lines.map((l) => `   ${l}`)]);
     addTrace(s.result.allPass ? 'pass' : 'fail', `← verify at ${s.result.byWidth.map((w) => w.width).join(' / ')}px`, lines.join('\n'));

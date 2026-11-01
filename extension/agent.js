@@ -46,6 +46,16 @@ Turning the verified preview into a source change:
    pixelPerfect refuses proposals that add !important or hashed class names.
 12. If the bridge is not available, or source tools say the page is not from the developer's local project, skip steps 9–11: do not search or edit files, and give the CSS in your answer.
 
+Break it (stress testing):
+- When the request starts with "Break it", the developer wants to find bugs BEFORE users do. Do not fix anything.
+- Call stress_test once on the selected block (all attacks), then check_states once (hover, keyboard focus, pressed and disabled states, plus keyboard basics). For each attack that broke it, find the cause: inspect the elements named in the problems (get_structure, get_matched_rules) and name the rule and file that make it fragile (e.g. a fixed width, white-space: nowrap, no min-width: 0 on a flex child, no overflow-wrap, a fixed height).
+- Answer in this format:
+   BROKE: one line per broken attack: what happened (with the numbers) and the cause (rule and file).
+   HELD: the attacks it survived, in one line.
+   NOT TESTED: what stress_test and check_states did not try (e.g. error/loading states that need app data, slow network, screen-reader reading order, other pages).
+- States: for a request about hover, focus or pressed styles ("the hover color is wrong", "I can't see focus"), use check_states to see the states, and verify with checks that have "state" (e.g. { type: "css", property: "outline-style", expected: "solid", state: "focus" }) to prove the fix.
+- To FIX a break (a follow-up like "fix the long text break"): preview the fix, then run stress_test with that attack (it must now hold) AND verify that the normal page still looks the same (e.g. css checks on the values you changed, visible). Then propose the source edit as usual.
+
 Sessions and follow-ups:
 - The developer may send follow-up requests that refine your previous work, e.g. "only on the featured card" or "a bit darker". Use what you learned earlier in this conversation; re-inspect only what may have changed.
 - Messages tell you whether your last change was applied to the code, undone or discarded. If it was applied, the source files now contain it: read_file again and propose edits against the CURRENT file. If a follow-up narrows an applied change, revert the shared part and add the narrower rule in the same proposal (several propose_source_edit calls are fine).
@@ -83,6 +93,8 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
   let currentPreview = null;   // the preview now on the page (name + args)
   let verifiedPreview;         // the preview that was on the page when verify last passed
   let sawFailure = false;      // some verify failed: there was something to fix
+  let checked = false;         // a verify or break test has run
+  let changedFirst = false;    // the agent previewed a change before its first check (e.g. a follow-up fix)
   let acceptance = null;       // the checks of the first failing verify: the bar a fix must clear
   let specAcceptance = null;   // the checks of the last Figma spec loaded: the fix must meet the design, not a subset
 
@@ -93,7 +105,7 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
     if (!reply.tool_calls?.length) {
       // Safety net: a verified fix, but no proposed edit while the code is reachable. Remind once.
       // (In a follow-up the agent may not re-read the file, so check the bridge directly.)
-      if (verified && sawFailure && !proposed && !reminded && (readSource || (await sourceStatus(tabId)).ok)) {
+      if (verified && (sawFailure || changedFirst) && !proposed && !reminded && (readSource || (await sourceStatus(tabId)).ok)) {
         reminded = true;
         onStep({ kind: 'note', text: 'The agent wrote the fix in its answer instead of proposing it. Asking it to propose the change so you can apply it.' });
         messages.push({ role: 'assistant', content: reply.content || '' });
@@ -113,7 +125,7 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
 
       const name = call.function.name;
       // Guard: no source change when every check passed before anything was changed.
-      const result = name === 'propose_source_edit' && !sawFailure
+      const result = name === 'propose_source_edit' && !sawFailure && !changedFirst
         ? { error: 'Not proposed: every check already passed before any change, so the request is already met. Do not change the code. Tell the developer it already matches, with the verify numbers.' }
         : await runTool(tabId, name, args);
       if ((name === 'verify' || name === 'verify_responsive') && result && !result.error) {
@@ -132,6 +144,14 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
         if (verified) verifiedPreview = currentPreview;
         if (result && result.allPass === false) sawFailure = true;
       }
+      if ((name === 'stress_test' || name === 'check_states') && result && !result.error) {
+        // A break test is a check too: it fails when an attack breaks the block, passes when all hold.
+        verified = result.allPass === true;
+        if (verified) verifiedPreview = currentPreview;
+        if (result.allPass === false) sawFailure = true;
+      }
+      if (['verify', 'verify_responsive', 'stress_test', 'check_states'].includes(name) && result && !result.error) checked = true;
+      if (name.startsWith('preview') && !result?.error && !checked) changedFirst = true;
       if (name.startsWith('preview') && !result?.error) {
         // Re-applying the exact preview that already passed verify keeps it verified.
         const sorted = Object.fromEntries(Object.entries(args).filter(([k]) => k !== 'element' || args.element !== 0).sort(([a], [b]) => a.localeCompare(b)));

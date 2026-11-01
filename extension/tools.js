@@ -36,6 +36,7 @@ const CHECK_SCHEMA = {
     min_ratio: { type: 'number' },
     tolerance_px: { type: 'number', description: 'allowed difference in px (default 2)' },
     element: { type: 'number', description: 'Which selected element to check (index, default 0)' },
+    state: { type: 'string', enum: ['hover', 'focus', 'active'], description: 'Optional: check the element (or target) while it is hovered, focused (keyboard) or pressed. E.g. the hover background colour.' },
     target: {
       type: 'object',
       description: 'Optional: check a descendant of the selected element instead, found by its text or a CSS selector.',
@@ -73,6 +74,15 @@ export const TOOLS = [
     'Measure the page and check whether the request is met. Returns pass/fail per check with real numbers, plus warnings if nearby elements moved since selection (possible regressions). Run after every preview.',
     { checks: { type: 'array', items: CHECK_SCHEMA, description: 'Checks that together prove the request is met.' } },
     ['checks']),
+  fn('stress_test',
+    'BREAK IT: stress-test a selected block with realistic bad data and small screens, and report what breaks (text cut off, content spilling out, elements overlapping, the page scrolling sideways). Every attack is undone right after it is measured; nothing is written. Attacks: long_text, long_word, big_numbers, empty, many_items, big_font, narrow, rtl, small_screen (320/375/768 px). Leave attacks empty to run them all. Also use it after a fix to prove the attack no longer breaks the block.',
+    {
+      ...ELEMENT,
+      attacks: { type: 'array', items: { type: 'string', enum: ['long_text', 'long_word', 'big_numbers', 'empty', 'many_items', 'big_font', 'narrow', 'rtl', 'small_screen'] }, description: 'Which attacks to run (default: all).' }
+    }),
+  fn('check_states',
+    'Test interaction states of the interactive elements (buttons, links, inputs) inside a selected block: forces :hover, keyboard :focus, :active and disabled, and reports what each state changes and what breaks (hover that moves other elements, focus with no visible indicator, contrast that drops, disabled that looks enabled). Also checks keyboard basics: clickable things a keyboard cannot reach, and icon buttons with no accessible name. Nothing is changed.',
+    ELEMENT),
   fn('verify_responsive',
     'Run the same checks at several screen widths (default 375, 768, 1280 px) to make sure a fix works on mobile, tablet and desktop. Use after verify passes.',
     {
@@ -118,6 +128,9 @@ const BRIDGE_TOOLS = new Set(['find_in_source', 'read_file']);
 // Runs a tool by name.
 export async function runTool(tabId, name, args) {
   if (name === 'verify_responsive') return verifyResponsive(tabId, args);
+  if (name === 'stress_test') return stressTest(tabId, args);
+  if (name === 'check_states') return checkStates(tabId, args);
+  if (name === 'verify' && (args.checks || []).some((c) => c.state)) return verifyWithStates(tabId, args);
   if (BRIDGE_TOOLS.has(name) || name === 'propose_source_edit') {
     const off = await notLocalProject(tabId);
     if (off) return off;
@@ -206,6 +219,171 @@ async function sendToPage(tabId, name, args) {
   } catch (err) {
     return { error: `Could not reach the page: ${err.message}` };
   }
+}
+
+// ── Interaction states ───────────────────────────────────────────────────────
+// :hover, :focus and :active are forced with the Chrome debugger (CSS.forcePseudoState), so the
+// page looks exactly as if the mouse or keyboard were there, without moving anything.
+const STATES = { hover: ['hover'], focus: ['focus', 'focus-visible'], active: ['active', 'hover'] };
+
+async function withDebugger(tabId, fn) {
+  const target = { tabId };
+  try { await chrome.debugger.attach(target, '1.3'); }
+  catch (err) { return { error: `Could not attach the debugger to test states: ${err.message}` }; }
+  const send = (cmd, params) => chrome.debugger.sendCommand(target, cmd, params);
+  try {
+    await send('DOM.enable');
+    await send('CSS.enable');
+    const { root } = await send('DOM.getDocument', { depth: 0 });
+    const force = async (selector, classes) => {
+      const { nodeId } = await send('DOM.querySelector', { nodeId: root.nodeId, selector });
+      if (!nodeId) throw new Error(`Element ${selector} not found.`);
+      await send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: classes });
+    };
+    return await fn(force);
+  } finally {
+    try { await chrome.debugger.detach(target); } catch {}
+  }
+}
+
+const settle = () => new Promise((r) => setTimeout(r, 60));
+
+function compareState(state, base, now, target) {
+  const changes = Object.keys(base.styles).filter((p) => base.styles[p] !== now.styles[p]).map((p) => `${p}: ${base.styles[p]} → ${now.styles[p]}`);
+  const problems = [];
+  const moved = base.others.filter((b, i) => b !== now.others[i]).length;
+  if (moved && state !== 'focus') problems.push(`${state === 'hover' ? 'hovering' : 'pressing'} ${target.label} moves ${moved} other element${moved === 1 ? '' : 's'} (layout jump)${base.box.w !== now.box.w || base.box.h !== now.box.h ? `: it changes size ${base.box.w}×${base.box.h} → ${now.box.w}×${now.box.h}` : ''}`);
+  if (now.contrast && !now.contrast.pass) problems.push(`text contrast in the ${state} state is ${now.contrast.actual} (needs ${now.contrast.expected})${base.contrast?.pass ? '; it was fine before' : ''}`);
+  if (state === 'focus') {
+    const s = now.styles, b = base.styles;
+    const outline = s['outline-style'] !== 'none' && parseFloat(s['outline-width']) > 0;
+    const other = ['box-shadow', 'border-top-color', 'border-top-width', 'background-color', 'text-decoration-line', 'color'].some((p) => s[p] !== b[p]);
+    if (!outline && !other) problems.push(`${target.label} shows no visible focus indicator: keyboard users can't see where they are (add a :focus-visible outline)`);
+  }
+  if (state === 'disabled' && !changes.length) problems.push(`${target.label} looks exactly the same when disabled`);
+  const notes = state === 'hover' && !changes.length ? ['no visual hover feedback'] : [];
+  return { attack: state, label: `${target.label} · ${state}`, applicable: true, held: problems.length === 0, problems, changes: changes.slice(0, 6), notes };
+}
+
+async function checkStates(tabId, { element = 0 } = {}) {
+  const prep = await sendToPage(tabId, 'states_prepare', { element });
+  if (prep.error) return prep;
+  const results = [];
+  if (prep.keyboard) results.push({ attack: 'keyboard', label: 'Keyboard & screen reader basics', applicable: true, held: prep.keyboard.length === 0, problems: prep.keyboard });
+  if (prep.targets.length) {
+    await sendToPage(tabId, 'states_freeze', { element, on: true });
+    try {
+      const out = await withDebugger(tabId, async (force) => {
+        for (const t of prep.targets) {
+          const sel = `[data-pp-state="${t.key}"]`;
+          const base = await sendToPage(tabId, 'states_snapshot', { element, key: t.key });
+          if (base.error) continue;
+          for (const [state, classes] of Object.entries(STATES)) {
+            await force(sel, classes);
+            await settle();
+            const now = await sendToPage(tabId, 'states_snapshot', { element, key: t.key });
+            await force(sel, []);
+            if (now.error) continue;
+            const r = compareState(state, base, now, t);
+            // :active is forced together with :hover; don't report the hover problem twice.
+            if (state === 'active') {
+              const hover = results.find((x) => x.attack === 'hover' && x.label.startsWith(t.label));
+              r.problems = r.problems.filter((p) => !hover?.problems.includes(p.replace(/^pressing/, 'hovering')));
+              r.held = r.problems.length === 0;
+            }
+            results.push(r);
+          }
+          if (t.canDisable) {
+            await sendToPage(tabId, 'states_disabled', { element, key: t.key, on: true });
+            const now = await sendToPage(tabId, 'states_snapshot', { element, key: t.key });
+            await sendToPage(tabId, 'states_disabled', { element, key: t.key, on: false });
+            if (!now.error) results.push(compareState('disabled', base, now, t));
+          }
+        }
+      });
+      if (out?.error) return out;
+    } finally {
+      await sendToPage(tabId, 'states_cleanup', { element });
+    }
+  }
+  const broken = results.filter((r) => !r.held).length;
+  return {
+    allPass: broken === 0,
+    results,
+    targets: prep.targets.length,
+    summary: prep.targets.length
+      ? `${broken} problem${broken === 1 ? '' : 's'} in ${results.length} state checks on ${prep.targets.length} interactive element${prep.targets.length === 1 ? '' : 's'}`
+      : 'No buttons, links or inputs in this block'
+  };
+}
+
+// verify with checks like { type: 'css', property: 'background-color', expected: '#5b4bd5', state: 'hover' }.
+async function verifyWithStates(tabId, args) {
+  const plain = args.checks.filter((c) => !c.state);
+  const base = plain.length ? await sendToPage(tabId, 'verify', { ...args, checks: plain }) : { allPass: true, results: [] };
+  if (base.error) return base;
+  const results = [...base.results];
+  await sendToPage(tabId, 'states_freeze', { on: true });
+  try {
+    const out = await withDebugger(tabId, async (force) => {
+      for (const c of args.checks.filter((x) => x.state)) {
+        const classes = STATES[c.state];
+        if (!classes) { results.push({ type: c.type, target: c.state, pass: false, summary: `unknown state "${c.state}"`, line: `✗ unknown state "${c.state}"` }); continue; }
+        const mark = await sendToPage(tabId, 'states_mark', { element: c.element ?? 0, target: c.target });
+        if (mark.error) { results.push({ type: c.type, target: c.state, pass: false, summary: mark.error, line: `✗ [${c.state}] ${mark.error}` }); continue; }
+        await force('[data-pp-state="check"]', classes);
+        await settle();
+        const { state, ...check } = c;
+        const v = await sendToPage(tabId, 'verify', { checks: [check] });
+        await force('[data-pp-state="check"]', []);
+        await sendToPage(tabId, 'states_cleanup', { keep: true });
+        for (const r of v.results || []) results.push({ ...r, state, line: r.line.replace(/^([✓✗]) /, `$1 [${state}] `) });
+        if (v.error) results.push({ type: c.type, pass: false, summary: v.error, line: `✗ [${state}] ${v.error}` });
+      }
+    });
+    if (out?.error) return out;
+  } finally {
+    await sendToPage(tabId, 'states_cleanup', {});
+  }
+  return { ...base, allPass: results.every((r) => r.pass), results };
+}
+
+// Break it: DOM attacks run in the page (stress.js); small screens use the debugger to resize.
+async function stressTest(tabId, { element = 0, attacks } = {}) {
+  const all = !Array.isArray(attacks) || !attacks.length;
+  const dom = all ? undefined : attacks.filter((a) => a !== 'small_screen');
+  const result = all || dom.length ? await sendToPage(tabId, 'stress_test', { element, attacks: dom }) : { allPass: true, results: [] };
+  if (result.error) return result;
+  if (all || attacks.includes('small_screen')) {
+    const screens = await smallScreens(tabId, element);
+    result.results.push(screens);
+    if (!screens.held) result.allPass = false;
+    const broken = result.results.filter((r) => !r.held).length;
+    result.summary = `${broken} of ${result.results.filter((r) => r.applicable).length} attacks broke it`;
+  }
+  return result;
+}
+
+async function smallScreens(tabId, element) {
+  const base = await sendToPage(tabId, 'stress_scan', { element });
+  if (base.error) return { attack: 'small_screen', label: 'Small screens (320 / 375 / 768 px)', applicable: false, held: true, problems: [], error: base.error };
+  const known = new Set(base.problems);
+  const target = { tabId };
+  const problems = [];
+  try { await chrome.debugger.attach(target, '1.3'); }
+  catch (err) { return { attack: 'small_screen', label: 'Small screens (320 / 375 / 768 px)', applicable: false, held: true, problems: [], error: `Could not resize the viewport: ${err.message}` }; }
+  try {
+    for (const width of [320, 375, 768]) {
+      await chrome.debugger.sendCommand(target, 'Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 0, mobile: width < 768 });
+      await new Promise((r) => setTimeout(r, 400));
+      const s = await sendToPage(tabId, 'stress_scan', { element });
+      for (const p of s.problems || []) if (!known.has(p) && problems.length < 8) problems.push(`at ${width}px: ${p}`);
+    }
+  } finally {
+    try { await chrome.debugger.sendCommand(target, 'Emulation.clearDeviceMetricsOverride'); } catch {}
+    try { await chrome.debugger.detach(target); } catch {}
+  }
+  return { attack: 'small_screen', label: 'Small screens (320 / 375 / 768 px)', applicable: true, held: problems.length === 0, problems };
 }
 
 // Resizes the page's viewport with the Chrome DevTools Protocol, runs verify at each width,
