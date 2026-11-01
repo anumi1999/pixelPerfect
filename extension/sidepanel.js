@@ -5,6 +5,24 @@ import { loadFigma, figmaSummary, useDesign, parseFigmaUrl } from './figma.js';
 import { sourceStatus, runTool } from './tools.js';
 
 const $ = (id) => document.getElementById(id);
+
+// If sidepanel.html is older than this file, a button may be missing. Say so clearly instead of
+// stopping the whole panel with "Cannot read properties of null".
+const missing = new Set();
+function on(id, event, handler) {
+  const el = $(id);
+  if (el) { el.addEventListener(event, handler); return; }
+  missing.add(id);
+  console.warn(`[pixelPerfect] #${id} is missing from sidepanel.html`);
+  queueMicrotask(() => {
+    if (document.getElementById('__ppStale')) return;
+    const bar = document.createElement('div');
+    bar.id = '__ppStale';
+    bar.style.cssText = 'background:#7a2633;color:#fff;padding:8px 12px;font:13px system-ui';
+    bar.textContent = `Some pixelPerfect files are out of date (missing: ${[...missing].join(', ')}). Copy the WHOLE extension folder from the latest zip, then press Reload on chrome://extensions.`;
+    document.body.prepend(bar);
+  });
+}
 let tabId = null;
 let shownAttack = null;   // the break-test attack shown on the page right now
 let elements = [];        // descriptions of the picked elements (index = position)
@@ -27,7 +45,7 @@ function newSession() {
   session = { messages: null, notes: [], turns: [] };
   renderThread();
 }
-$('newSession').addEventListener('click', () => { newSession(); resetRunView(); setStatus('New session', ''); $('goal').focus(); });
+on('newSession', 'click', () => { newSession(); resetRunView(); setStatus('New session', ''); $('goal').focus(); });
 
 function renderThread() {
   const turns = session.turns;
@@ -80,9 +98,9 @@ function showSettings(open) {
   $('settingsView').hidden = !open;
   $('mainView').hidden = open;
 }
-$('openSettings').addEventListener('click', () => showSettings($('settingsView').hidden));
-$('closeSettings').addEventListener('click', () => showSettings(false));
-$('closePanel').addEventListener('click', () => window.close());
+on('openSettings', 'click', () => showSettings($('settingsView').hidden));
+on('closeSettings', 'click', () => showSettings(false));
+on('closePanel', 'click', () => window.close());
 
 function settingsStatus(text, kind = '') {
   $('settingsStatus').textContent = text;
@@ -95,7 +113,9 @@ const cacheKey = (url) => { try { const { fileKey, nodeId } = parseFigmaUrl(url)
 
 async function loadDesign({ fresh = false } = {}) {
   const url = $('figmaUrl').value.trim();
-  if (!url) return;
+  if (!url) { if (fresh) $('figmaStatus').textContent = 'Paste the Figma link first (right-click the frame → Copy link to selection).'; return; }
+  if (fresh && !$('figmaToken').value.trim()) { $('figmaStatus').textContent = 'Add your Figma personal access token first.'; return; }
+  try { parseFigmaUrl(url); } catch (err) { $('figmaStatus').textContent = err.message; return; }
   const key = cacheKey(url);
   if (!fresh && key) {
     const cached = (await chrome.storage.local.get(key))[key];
@@ -123,7 +143,23 @@ async function loadDesign({ fresh = false } = {}) {
     }
   }
 }
-$('loadFigma').addEventListener('click', async () => {
+// Designs pasted from the pixelPerfect Figma plugin: same data as the API, no rate limit.
+on('usePaste', 'click', async () => {
+  let data;
+  try { data = JSON.parse($('figmaPaste').value.trim()); } catch { $('figmaStatus').textContent = 'That is not the plugin\'s export. Click Copy in the plugin and paste again.'; return; }
+  if (data?.pixelPerfectFigma !== 1 || !data.root) { $('figmaStatus').textContent = 'That is not the plugin\'s export. Click Copy in the plugin and paste again.'; return; }
+  try {
+    const s = useDesign(data);
+    $('figmaStatus').textContent = `Figma: "${s.name}" loaded from the plugin, ${s.components} components`;
+    $('figmaPaste').value = '';
+    await chrome.storage.local.set({ figmaPasted: { ...data, savedAt: Date.now() } });
+  } catch (err) {
+    $('figmaStatus').textContent = `Could not use the pasted design: ${err.message}`;
+  }
+});
+
+on('loadFigma', 'click', async () => {
+  await chrome.storage.local.remove('figmaPasted');
   await chrome.storage.local.set({ figmaUrl: $('figmaUrl').value.trim(), figmaToken: $('figmaToken').value.trim() });
   await loadDesign({ fresh: true });
 });
@@ -153,7 +189,12 @@ async function loadSettings() {
   document.querySelector(`input[name="mode"][value="${s.mode || 'cloud'}"]`).checked = true;
   applyBridgeSettings();
   showReadiness();
-  if (s.figmaUrl && s.figmaToken) loadDesign();
+  // A design pasted from the plugin wins over the API link (it is what you exported last).
+  const { figmaPasted } = await chrome.storage.local.get('figmaPasted');
+  if (figmaPasted?.root) {
+    const d = useDesign(figmaPasted);
+    $('figmaStatus').textContent = `Figma: "${d.name}", ${d.components} components (pasted from the plugin ${new Date(figmaPasted.savedAt).toLocaleString()})`;
+  } else if (s.figmaUrl && s.figmaToken) loadDesign();
 }
 
 function provider(which) {
@@ -176,7 +217,7 @@ document.querySelectorAll('input[name="mode"]').forEach((r) => r.addEventListene
   showReadiness();
 }));
 
-$('save').addEventListener('click', async () => {
+on('save', 'click', async () => {
   const values = Object.fromEntries(FIELDS.map((f) => [f, $(f).value.trim()]));
   await chrome.storage.local.set({ ...values, mode: mode(), allowEscalation: $('allowEscalation').checked });
   settingsStatus('Saved', 'ok');
@@ -185,7 +226,7 @@ $('save').addEventListener('click', async () => {
   await checkBridge();
 });
 
-$('test').addEventListener('click', async () => {
+on('test', 'click', async () => {
   const p = provider(mode() === 'cloud' ? 'cloud' : 'local');
   settingsStatus(`Testing ${p.name}…`);
   try {
@@ -223,7 +264,7 @@ function setStepper(stage) {
 }
 
 // ── Picking elements ──────────────────────────────────────────────────────────
-$('pick').addEventListener('click', async () => {
+on('pick', 'click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
   tabId = tab.id;
@@ -299,7 +340,7 @@ function renderSelection(where) {
   }));
 }
 
-$('countBtn').addEventListener('click', () => {
+on('countBtn', 'click', () => {
   const open = $('selection').hidden;
   $('selection').hidden = !open;
   $('countBtn').setAttribute('aria-expanded', String(open));
@@ -313,7 +354,7 @@ async function clearSelection() {
   $('pick').textContent = 'Pick elements';
   updateRunButton();
 }
-$('clearSelection').addEventListener('click', clearSelection);
+on('clearSelection', 'click', clearSelection);
 
 // ── Running the agent ─────────────────────────────────────────────────────────
 function updateRunButton() {
@@ -322,17 +363,17 @@ function updateRunButton() {
 }
 
 // "Break it": the same agent, asked to stress-test instead of fix.
-$('breakIt').addEventListener('click', () => {
+on('breakIt', 'click', () => {
   const extra = $('goal').value.trim();
   $('goal').value = `Break it: stress-test the selected block and report what breaks. Do not fix anything yet.${extra ? ` Focus: ${extra}` : ''}`;
   $('run').click();
 });
 
-$('goal').addEventListener('keydown', (e) => {
+on('goal', 'keydown', (e) => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) $('run').click();
 });
 
-$('run').addEventListener('click', async () => {
+on('run', 'click', async () => {
   const goal = $('goal').value.trim();
   if (!goal || running) return;
   running = true;
@@ -400,13 +441,16 @@ async function showResult() {
   const page = await sendToPage({ type: 'PP_PREVIEW_MODE', mode: 'changes' });
   const edits = state.pendingEdits;
   const hasChanges = !!page?.hasChanges || edits.length > 0;
-  const alreadyMet = run.verified && !run.firstFailing && !hasChanges;
+  const isBreak = !!(run.stress || run.states) && !run.previewed && !edits.length;
+  const alreadyMet = !isBreak && run.verified && !run.firstFailing && !hasChanges;
 
   // Root cause, and where it lives in the code.
-  const cause = extractSection(run.answer, 'CAUSE') || (alreadyMet ? extractSection(run.answer, 'ANSWER') || firstSentence(run.answer) : '');
+  const cause = isBreak
+    ? extractSection(run.answer, 'BROKE') || firstSentence(run.answer)
+    : extractSection(run.answer, 'CAUSE') || (alreadyMet ? extractSection(run.answer, 'ANSWER') || firstSentence(run.answer) : '');
   if (cause || run.answer) {
     $('causeBlock').hidden = false;
-    $('causeBlock').querySelector('h3').textContent = alreadyMet ? 'Already matches' : 'Root Cause';
+    $('causeBlock').querySelector('h3').textContent = isBreak ? 'What breaks and why' : alreadyMet ? 'Already matches' : 'Root Cause';
     $('causeText').textContent = cause || firstSentence(run.answer);
   }
   const loc = edits[0] ? { file: edits[0].file.split('/').pop(), line: firstChangedLine(edits[0]) } : null;
@@ -434,8 +478,7 @@ async function showResult() {
   if (run.verified) setStepper('finished'); else if (run.lastVerify || run.responsive || run.stress) setStepper('failed');
   const responsiveOk = run.responsive?.allPass === true;
   let summary;
-  const breakOnly = (run.stress || run.states) && !run.previewed && !edits.length;
-  if (breakOnly) {
+  if (isBreak) {
     const all = breakResults();
     const broke = all.filter((r) => !r.held);
     const tried = all.filter((r) => r.applicable).length;
@@ -456,7 +499,7 @@ async function showResult() {
 
 const clean = (s) => String(s || '').replace(/\*\*/g, '').replace(/`/g, '').trim();
 function extractSection(text, name) {
-  const m = String(text || '').match(new RegExp(`\\**${name}\\**\\s*:\\s*([\\s\\S]*?)(?=\\n\\s*\\**(?:CAUSE|FIX|VERIFIED|NOT TESTED|My interpretation)\\b|$)`, 'i'));
+  const m = String(text || '').match(new RegExp(`\\**${name}\\**\\s*:\\s*([\\s\\S]*?)(?=\\n\\s*\\**(?:CAUSE|FIX|VERIFIED|NOT TESTED|BROKE|HELD|My interpretation)\\b|$)`, 'i'));
   return m ? clean(m[1]).replace(/\s+/g, ' ').slice(0, 320) : '';
 }
 const firstSentence = (t) => clean(t).split(/(?<=[.!?])\s/)[0]?.slice(0, 240) || '';
@@ -465,7 +508,7 @@ function firstChangedLine(edit) {
   return m ? Number(m[1]) + (/^- /m.test(edit.diff) ? 0 : 1) : edit.line;
 }
 
-$('viewCode').addEventListener('click', async () => {
+on('viewCode', 'click', async () => {
   const edit = state.pendingEdits[0] || lastApplied;
   const target = edit ? { file: edit.file, line: edit.line } : fileAndLine(elements[0]?.source) && { file: elements[0].source, line: 1 };
   if (!target) { $('diffCard').hidden = false; return; }
@@ -577,8 +620,8 @@ function renderChecks() {
   $('warnNote').textContent = warnings.length ? `⚠ ${warnings.length} nearby element${warnings.length === 1 ? '' : 's'} moved. Expected if the fix changes size; see View Details.` : '';
 }
 
-$('viewDetails').addEventListener('click', () => { $('traceCard').hidden = false; $('traceCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
-$('hideTrace').addEventListener('click', () => { $('traceCard').hidden = true; });
+on('viewDetails', 'click', () => { $('traceCard').hidden = false; $('traceCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+on('hideTrace', 'click', () => { $('traceCard').hidden = true; });
 
 // Footer
 function setFooter(kind) {
@@ -610,8 +653,8 @@ function setPreviewButtons(showingOriginal) {
   $('showOriginal').setAttribute('aria-pressed', String(showingOriginal));
   $('showChanges').setAttribute('aria-pressed', String(!showingOriginal));
 }
-$('showOriginal').addEventListener('click', async () => { const s = await sendToPage({ type: 'PP_PREVIEW_MODE', mode: 'original' }); if (s) setPreviewButtons(true); });
-$('showChanges').addEventListener('click', async () => { const s = await sendToPage({ type: 'PP_PREVIEW_MODE', mode: 'changes' }); if (s) setPreviewButtons(false); });
+on('showOriginal', 'click', async () => { const s = await sendToPage({ type: 'PP_PREVIEW_MODE', mode: 'original' }); if (s) setPreviewButtons(true); });
+on('showChanges', 'click', async () => { const s = await sendToPage({ type: 'PP_PREVIEW_MODE', mode: 'changes' }); if (s) setPreviewButtons(false); });
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -712,7 +755,7 @@ function previewCssText() {
   }).filter(Boolean);
   return parts.length ? `/* pixelPerfect preview (${run.verified ? 'verified' : 'NOT verified'}), ${new Date().toLocaleString()} */\n${parts.join('\n\n')}\n` : '';
 }
-$('copyCss').addEventListener('click', async () => {
+on('copyCss', 'click', async () => {
   const text = previewCssText();
   if (!text) return;
   try {
@@ -724,7 +767,7 @@ $('copyCss').addEventListener('click', async () => {
   }
 });
 
-$('toggleDiff').addEventListener('click', () => {
+on('toggleDiff', 'click', () => {
   const open = $('diffCard').hidden;
   $('diffCard').hidden = !open;
   $('toggleDiff').setAttribute('aria-pressed', String(open));
@@ -732,7 +775,7 @@ $('toggleDiff').addEventListener('click', () => {
 
 let lastApplied = null;
 
-$('applyCode').addEventListener('click', async () => {
+on('applyCode', 'click', async () => {
   const edits = state.pendingEdits.map(({ file, find, replace }) => ({ file, find, replace }));
   if (!edits.length) return;
   $('applyCode').disabled = true;
@@ -796,7 +839,7 @@ async function rerunStress() {
   return r.allPass;
 }
 
-$('undoCode').addEventListener('click', async () => {
+on('undoCode', 'click', async () => {
   try {
     const r = await bridgeRequest('undo');
     addTrace('', 'Code change undone', (r.restored || []).join('\n') || r.message);
@@ -810,13 +853,13 @@ $('undoCode').addEventListener('click', async () => {
   }
 });
 
-$('openEditor').addEventListener('click', async () => {
+on('openEditor', 'click', async () => {
   if (!lastApplied) return;
   try { await openInEditor({ file: lastApplied.file, line: lastApplied.line }); }
   catch (err) { addTrace('error', 'Could not open the editor', err.message); }
 });
 
-$('discard').addEventListener('click', async () => {
+on('discard', 'click', async () => {
   await sendToPage({ type: 'PP_DISCARD' });
   state.pendingEdits = [];
   if (session.turns.length) {
@@ -851,7 +894,10 @@ function onStep(s) {
   if (s.kind === 'result' && s.name === 'check_states' && s.result?.results) { run.states = s.result; renderStress(); }
   if (s.kind === 'result' && s.name === 'stress_test' && s.result?.results) {
     if (!run.firstStress) run.firstStress = s.result;
-    run.stress = s.result;
+    // Keep every attack's latest result: re-running one attack after a fix updates that row only.
+    const byAttack = new Map((run.stress?.results || []).map((r) => [r.attack, r]));
+    for (const r of s.result.results) byAttack.set(r.attack, r);
+    run.stress = { ...s.result, results: [...byAttack.values()] };
     if (s.result.allPass && lastArgs.stress_test) state.lastStress = lastArgs.stress_test;
     renderStress();
   }

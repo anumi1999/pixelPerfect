@@ -87,7 +87,8 @@
       }
     },
     long_word(root, rec) {
-      for (const n of textNodes(root)) if (n.data.trim().length > 3) rec.text(n, `${n.data} verylongunbrokenidentifier_0123456789abcdef`);
+      // Words, not numbers: a price or a percentage never gets a 40-character word appended.
+      for (const n of textNodes(root)) if (n.data.trim().length > 3 && !/^[\d\s$€£¥₹%.,:+\-–×x/()]+$/i.test(n.data.trim())) rec.text(n, `${n.data} verylongunbrokenidentifier_0123456789abcdef`);
     },
     big_numbers(root, rec) {
       for (const n of textNodes(root)) {
@@ -222,8 +223,11 @@
     }
 
     // The whole page scrolling sideways.
+    // Only blame this block if it (or something in it) actually sticks out past the screen's right edge;
+    // otherwise the sideways scroll comes from another part of the page.
     const pageOver = document.documentElement.scrollWidth - innerWidth;
-    if (pageOver > 2) problems.set('page-x', `the page now scrolls sideways (${pageOver}px wider than the screen)`);
+    const sticksOut = rootBox.right > innerWidth + 2 || ls.some(({ box }) => box.right > innerWidth + 2);
+    if (pageOver > 2 && sticksOut) problems.set('page-x', `the page now scrolls sideways (${pageOver}px wider than the screen) because this block sticks out`);
 
     return problems;
   }

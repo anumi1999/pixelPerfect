@@ -39,7 +39,7 @@ Turning the verified preview into a source change:
 11. Write fixes a teammate would accept:
    - Change the rule that CAUSES the problem. Do not add a new overriding rule on top of it.
    - If a later rule overrides an earlier, correct one, delete the later override instead of copying the correct values into it.
-   - Don't force a layout with hacks (white-space: nowrap + ellipsis to make text one line, fixed heights to match a size): remove what causes the problem (e.g. a max-width).
+   - Don't force a layout with hacks (white-space: nowrap + ellipsis to make text one line, fixed heights to match a size, overflow: hidden to hide content that spills, word-break on numbers): remove what causes the problem (e.g. a max-width, a missing min-width: 0).
    - Every declaration in your proposal must be needed by a check. Don't add properties that do nothing (e.g. row-gap on an element that is not flex or grid).
    - Reuse existing design tokens and variables (search with find_in_source for "--" or read the tokens file) instead of hard-coded values.
    - No !important, no inline styles, no new one-off selectors. Keep the diff as small as possible.
@@ -109,7 +109,7 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
     if (!reply.tool_calls?.length) {
       // Safety net: a verified fix, but no proposed edit while the code is reachable. Remind once.
       // (In a follow-up the agent may not re-read the file, so check the bridge directly.)
-      if (verified && (sawFailure || changedFirst) && !proposed && !reminded && (readSource || (await sourceStatus(tabId)).ok)) {
+      if (!/^break it/i.test(goal) && verified && (sawFailure || changedFirst) && !proposed && !reminded && (readSource || (await sourceStatus(tabId)).ok)) {
         reminded = true;
         onStep({ kind: 'note', text: 'The agent wrote the fix in its answer instead of proposing it. Asking it to propose the change so you can apply it.' });
         messages.push({ role: 'assistant', content: reply.content || '' });
