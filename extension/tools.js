@@ -40,7 +40,7 @@ const CHECK_SCHEMA = {
     target: {
       type: 'object',
       description: 'Optional: check a descendant of the selected element instead, found by its text or a CSS selector.',
-      properties: { text: { type: 'string' }, selector: { type: 'string' } }
+      properties: { text: { type: 'string' }, texts: { type: 'array', items: { type: 'string' }, description: 'the element that contains ALL these texts (e.g. a title + subtitle wrapper)' }, selector: { type: 'string' } }
     }
   },
   required: ['type']

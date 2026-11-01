@@ -14,6 +14,7 @@ First, understand the INTENT:
 When a Figma design is loaded and the request is about matching the design ("match the design", "this doesn't look like Figma", or no specific value given):
 - Call get_figma_match on the selected element. If it is not confident, name the top candidates in your answer and stop, so the developer can confirm.
 - Design values come from Figma or from the developer, never from comments or notes in the code.
+- For requests that are not about the design (e.g. "the padding differs from the other cards"), do not use the Figma tools: compare with the page itself (the other cards, the shared rule).
 - Never change the page's content or markup (text, icons, elements) just to make a check's target match. If a check cannot find its target, say so; do not rewrite the UI to satisfy it.
 - Call get_figma_spec for the match. Its checks are the acceptance criteria: run verify with them first to list the mismatches, fix each one, then verify with the same checks until they all pass.
 - Report each mismatch you fixed as "property: was → now (design value)".
@@ -38,6 +39,8 @@ Turning the verified preview into a source change:
 11. Write fixes a teammate would accept:
    - Change the rule that CAUSES the problem. Do not add a new overriding rule on top of it.
    - If a later rule overrides an earlier, correct one, delete the later override instead of copying the correct values into it.
+   - Don't force a layout with hacks (white-space: nowrap + ellipsis to make text one line, fixed heights to match a size): remove what causes the problem (e.g. a max-width).
+   - Every declaration in your proposal must be needed by a check. Don't add properties that do nothing (e.g. row-gap on an element that is not flex or grid).
    - Reuse existing design tokens and variables (search with find_in_source for "--" or read the tokens file) instead of hard-coded values.
    - No !important, no inline styles, no new one-off selectors. Keep the diff as small as possible.
    - The preview used inline !important styles only to test; the source fix must not.
@@ -97,6 +100,7 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
   let changedFirst = false;    // the agent previewed a change before its first check (e.g. a follow-up fix)
   let acceptance = null;       // the checks of the first failing verify: the bar a fix must clear
   let specAcceptance = null;   // the checks of the last Figma spec loaded: the fix must meet the design, not a subset
+  let specPending = null;      // a spec that was loaded but not used yet: it locks once a verify uses any of its checks
 
   for (let step = 1; step <= maxSteps; step++) {
     onStep({ kind: 'thinking', step });
@@ -132,6 +136,8 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
         // Lock the acceptance checks: the first failing verify sets them. A later verify only counts
         // if it still includes every one of them with the same expected value (extra checks are fine).
         if (result.allPass === false && !acceptance) acceptance = new Map((args.checks || []).map((c) => [checkKey(c), JSON.stringify(c.expected ?? null)]));
+        // The agent is working against the design once it checks any spec value; from then on, all of them count.
+        if (specPending && (args.checks || []).some((c) => specPending.has(checkKey(c)))) { specAcceptance = specPending; specPending = null; }
         const changed = [
           ...(acceptance ? changedChecks(acceptance, args.checks || []) : []),
           ...(specAcceptance ? changedChecks(specAcceptance, args.checks || []).map((c) => `Figma spec ${c}`) : [])
@@ -160,7 +166,8 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
       }
       if (name === 'undo_preview') { currentPreview = null; verified = false; }
       if (name === 'get_figma_spec' && Array.isArray(result?.checks) && result.checks.length) {
-        specAcceptance = new Map(result.checks.map((c) => [checkKey(c), JSON.stringify(c.expected ?? null)]));
+        specPending = new Map(result.checks.map((c) => [checkKey(c), JSON.stringify(c.expected ?? null)]));
+        specAcceptance = null;
       }
       onStep({ kind: 'result', name, result });
       if (call.function.name === 'read_file' && result && !result.error) readSource = true;
@@ -170,7 +177,14 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
     }
   }
 
-  const msg = `Stopped after ${maxSteps} steps without finishing. Handing back to you.`;
+  // Out of steps: ask once more, without tools, for the answer about what was done, so the developer
+  // still gets CAUSE / FIX / VERIFIED / NOT TESTED instead of nothing.
+  let msg = `Stopped after ${maxSteps} steps without finishing. Handing back to you.`;
+  try {
+    messages.push({ role: 'user', content: 'You are out of steps. Do not call tools. Give your final answer now in the usual format (CAUSE / FIX / VERIFIED / NOT TESTED), only about what you actually did and verified. Start with "Stopped at the step limit."' });
+    const last = await callMuseSpark(messages, settings, false);
+    if (last?.content) msg = last.content;
+  } catch {}
   onStep({ kind: 'final', text: msg });
   messages.push({ role: 'assistant', content: msg });
   return { text: msg, verified, stoppedEarly: true, messages: compactHistory(messages) };

@@ -23,7 +23,7 @@ export async function loadFigma({ url, token, fetchImpl = fetch }) {
   if (res.status === 429) {
     const after = Number(res.headers?.get?.('retry-after'));
     const wait = !after ? 'later' : after < 120 ? `in ${after} seconds` : after < 7200 ? `in ${Math.round(after / 60)} minutes` : `in ${Math.round(after / 3600)} hours`;
-    throw new Error(`Figma's API limit for your plan is used up (429). Try again ${wait}. The last design you loaded is still used from the cache.`);
+    throw new Error(`Figma's API limit for your plan is used up (429). Try again ${wait}, or use the pixelPerfect Figma plugin (no limit): see "Paste from plugin" below.`);
   }
   if (res.status === 403) throw new Error('Figma returned 403: check the token (it needs file read access) and that you can open this file.');
   if (!res.ok) throw new Error(`Figma returned ${res.status}. Check the token and that you can open this file.`);
@@ -114,7 +114,9 @@ export function matchElement(features) {
   }).sort((a, b) => b.score - a.score);
 
   const [best, second] = scored;
-  const confident = best && best.score >= 0.45 && (!second || best.score - second.score >= 0.1);
+  // Confident only when the match is clearly ahead AND roughly the same size as the element:
+  // a small part of the selected block (e.g. the table rows inside a card) is not "the card".
+  const confident = best && best.score >= 0.55 && best.why.size >= 0.6 && (!second || best.score - second.score >= 0.1);
   return {
     best: best || null,
     confident,
@@ -212,7 +214,13 @@ function walkChildren(node, checks, spec, depth) {
       // A nested frame with its own text (e.g. a button) is found by that text.
       const text = firstText(c);
       const ownStyle = (c.layoutMode && c.layoutMode !== 'NONE') || c.cornerRadius != null || solidFill(c);
-      if (text && ownStyle && c.children?.length) containerChecks(c, checks, { text: text.trim().slice(0, 60) }, spec);
+      // Found on the page as the element that holds ALL its texts (e.g. the title + subtitle wrapper),
+      // not by its first text alone, which would point at the title itself.
+      const texts = [...new Set(textsIn(c).map((t) => t.slice(0, 60)))].slice(0, 4);
+      if (text && ownStyle && c.children?.length) {
+        const target = texts.length > 1 ? { texts, text: texts[0] } : { text: text.trim().slice(0, 60) };
+        containerChecks(c, checks, target, spec);
+      }
       walkChildren(c, checks, spec, depth + 1);
     }
   }

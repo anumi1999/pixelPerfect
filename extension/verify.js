@@ -26,6 +26,14 @@
       try { el = root.matches(target.selector) ? root : root.querySelector(target.selector); } catch { el = null; }
       return { el, label: target.selector };
     }
+    if (Array.isArray(target.texts) && target.texts.length > 1) {
+      const loose = (s) => String(s).toLowerCase().replace(/[^\p{L}\p{N}%$.,]+/gu, ' ').replace(/\s+/g, ' ').trim();
+      const wants = target.texts.map(loose).filter(Boolean);
+      const has = (e) => { const t = loose(e.innerText || e.textContent || ''); return wants.every((w) => t.includes(w)); };
+      const all = [root, ...root.querySelectorAll('*')].filter(has);
+      const el = all.find((e) => ![...e.children].some(has)) || all[0] || null;
+      return { el, label: `"${target.texts[0].slice(0, 24)}" + ${target.texts.length - 1} more` };
+    }
     if (target.text) {
       // Compared loosely: case, spacing, quotes, arrows and other symbols ignored (Figma often has "View ↗"
       // where the page draws the arrow as an icon).
