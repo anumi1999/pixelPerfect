@@ -4,6 +4,8 @@
 (() => {
   if (window.__ppMainLoaded) return;
   window.__ppMainLoaded = true;
+  // Loaded at page start on local dev pages (manifest), so errors during load are caught too.
+  const fromPageLoad = document.readyState === 'loading';
 
   const HTML_TAGS = new Set(['div', 'span', 'p', 'a', 'button', 'input', 'form', 'ul', 'li', 'img',
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'section', 'article', 'header', 'footer', 'main', 'nav',
@@ -141,7 +143,7 @@
 
   window.addEventListener('pp:log', (e) => {
     const since = Number(e.detail) || 0;
-    window.dispatchEvent(new CustomEvent('pp:log-result', { detail: JSON.stringify({ now: performance.now(), entries: log.filter((x) => x.t >= since) }) }));
+    window.dispatchEvent(new CustomEvent('pp:log-result', { detail: JSON.stringify({ now: performance.now(), fromPageLoad, entries: log.filter((x) => x.t >= since) }) }));
   });
 
   window.addEventListener('pp:inspect', () => {

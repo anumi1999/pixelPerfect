@@ -356,7 +356,12 @@ if (!window.__ppContentLoaded) {
     const log = readLog(since);
     if (!log) return { error: 'The page log is not available. Pick the element again so pixelPerfect can attach to the page.' };
     const entries = log.entries.filter((e) => !onlyErrors || e.level !== 'info').slice(-30);
-    return { entries: entries.map(({ t, ...e }) => e), note: 'Recorded since pixelPerfect was opened on this page (errors before that are not seen).' };
+    return {
+      entries: entries.map(({ t, ...e }) => e),
+      note: log.fromPageLoad
+        ? 'Recorded since this page started loading (local dev page).'
+        : 'Recorded since pixelPerfect was opened on this page: errors from before that are not seen (only local dev pages are recorded from page load).'
+    };
   }
 
   // Clicks the selected element (or a target inside it) and reports what happened in the next moments:
