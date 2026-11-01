@@ -43,7 +43,38 @@ let session = { messages: null, notes: [], turns: [] };
 
 function newSession() {
   session = { messages: null, notes: [], turns: [] };
+  state.lastClick = null;
   renderThread();
+  forgetSession();
+}
+
+// ── Saved sessions: a session survives closing the side panel (one per page address) ──
+async function sessionKey() {
+  try {
+    const [tab] = tabId ? [await chrome.tabs.get(tabId)] : await chrome.tabs.query({ active: true, currentWindow: true });
+    const u = new URL(tab.url);
+    return `pp-session:${u.origin}${u.pathname}`;
+  } catch { return null; }
+}
+async function saveSession() {
+  if (!session.turns.length) return;
+  const key = await sessionKey();
+  if (!key) return;
+  try { await chrome.storage.local.set({ [key]: { ...session, savedAt: Date.now() } }); }
+  catch (err) { addTrace('fail', 'Could not save the session', err.message); }
+}
+async function forgetSession() {
+  const key = await sessionKey();
+  if (key) try { await chrome.storage.local.remove(key); } catch {}
+}
+async function restoreSession() {
+  const key = await sessionKey();
+  if (!key) return;
+  const saved = (await chrome.storage.local.get(key))[key];
+  if (!saved?.turns?.length) return;
+  session = { messages: saved.messages, notes: [...(saved.notes || []), 'The side panel was closed and reopened since your last answer: previews may be gone and the page may have been reloaded. Inspect again before relying on earlier measurements.'], turns: saved.turns, awaitingAnswer: !!saved.awaitingAnswer };
+  renderThread();
+  setStatus(`Resumed your session from ${new Date(saved.savedAt).toLocaleString()} · New session to start fresh`, '');
 }
 on('newSession', 'click', () => { newSession(); resetRunView(); setStatus('New session', ''); $('goal').focus(); });
 
@@ -64,7 +95,7 @@ function renderThread() {
     return li;
   }));
   $('thread').scrollTop = $('thread').scrollHeight;
-  $('goal').placeholder = turns.length
+  $('goal').placeholder = session.awaitingAnswer ? 'Your answer… e.g. "yes, download the campaigns as CSV"' : turns.length
     ? 'Follow up… e.g. "only on the featured card" or "a bit darker"'
     : 'What\'s wrong? e.g. "padding should be 24px like the other cards"';
   $('run').textContent = turns.length ? 'Send' : 'Fix it';
@@ -76,6 +107,7 @@ function updateLastTurn(outcome, kind) {
   last.outcome = outcome;
   last.kind = kind;
   renderThread();
+  saveSession();
 }
 
 function resetRunView() {
@@ -199,7 +231,7 @@ async function loadSettings() {
 
 function provider(which) {
   return which === 'local'
-    ? { name: 'Muse Glimmer (local)', apiKey: $('localKey').value.trim(), model: $('localModel').value.trim(), baseUrl: $('localUrl').value.trim() }
+    ? { name: `Local model (${$('localModel').value.trim() || 'local'})`, apiKey: $('localKey').value.trim(), model: $('localModel').value.trim(), baseUrl: $('localUrl').value.trim() }
     : { name: 'Muse Spark (cloud)', apiKey: $('apiKey').value.trim(), model: $('model').value.trim(), baseUrl: $('baseUrl').value.trim() };
 }
 
@@ -248,7 +280,8 @@ const STAGE_OF = {
   inspect_element: 'inspect', get_structure: 'inspect', get_component: 'inspect', get_figma_match: 'inspect',
   get_matched_rules: 'explain', find_in_source: 'explain', read_file: 'explain', get_figma_spec: 'explain',
   preview_css: 'fix', preview_stylesheet: 'fix', undo_preview: 'fix', propose_source_edit: 'fix', withdraw_source_edit: 'fix',
-  verify: 'verify', verify_responsive: 'verify', stress_test: 'verify', check_states: 'verify'
+  verify: 'verify', verify_responsive: 'verify', stress_test: 'verify', check_states: 'verify',
+  click_and_watch: 'explain', page_errors: 'explain'
 };
 
 // stage: one of STEPS, 'finished', 'failed' or null (reset)
@@ -406,11 +439,14 @@ on('run', 'click', async () => {
   }
   running = false;
   run.verified = !!outcome?.verified;
+  run.asked = !!outcome?.asked;
+  session.awaitingAnswer = run.asked;
   if (outcome?.messages) { session.messages = outcome.messages; session.notes = []; }
   updateRunButton();
   const summary = await showResult();
   if (outcome) {
     session.turns.push({ goal, ...summary });
+    saveSession();
     renderThread();
     $('goal').value = '';
   }
@@ -423,7 +459,7 @@ async function runWith(which, goal) {
   try {
     const fig = figmaSummary();
     const context = fig ? `Figma design loaded: "${fig.name}" (${fig.components} components). Use get_figma_match when the request is about matching the design.` : 'No Figma design loaded.';
-    return await runAgent({ goal, element: elements, tabId, settings: p, onStep, context, history: session.messages, notes: session.notes });
+    return await runAgent({ goal, element: elements, tabId, settings: p, onStep, context, history: session.messages, notes: session.notes, approved: !!session.awaitingAnswer });
   } catch (err) {
     addTrace('error', `${p.name} stopped`, err.message);
     $('traceCard').hidden = false;
@@ -448,10 +484,24 @@ async function showResult() {
   const cause = isBreak
     ? extractSection(run.answer, 'BROKE') || firstSentence(run.answer)
     : extractSection(run.answer, 'CAUSE') || (alreadyMet ? extractSection(run.answer, 'ANSWER') || firstSentence(run.answer) : '');
+  const note = extractSection(run.answer, 'NOTE');
+  // The agent asked for approval: show the question and wait for the answer.
+  if (run.asked) {
+    const q = String(run.answer || '').replace(/^QUESTION:\s*/, '');
+    $('causeBlock').hidden = false;
+    $('causeBlock').querySelector('h3').textContent = 'Your approval is needed';
+    $('causeText').textContent = q;
+    renderChecks();
+    setStatus('Waiting for your answer: reply below (e.g. "yes" or what it should do)', 'bad');
+    setFooter('idle');
+    setStepper('explain');
+    $('goal').placeholder = 'Your answer… e.g. "yes, download the campaigns as CSV"';
+    return { outcome: `Asked you: ${q.split('\n')[0].slice(0, 140)}`, kind: '' };
+  }
   if (cause || run.answer) {
     $('causeBlock').hidden = false;
     $('causeBlock').querySelector('h3').textContent = isBreak ? 'What breaks and why' : alreadyMet ? 'Already matches' : 'Root Cause';
-    $('causeText').textContent = cause || firstSentence(run.answer);
+    $('causeText').textContent = (note ? `⚠ ${note}\n\n` : '') + (cause || firstSentence(run.answer));
   }
   const loc = edits[0] ? { file: edits[0].file.split('/').pop(), line: firstChangedLine(edits[0]) } : null;
   if (loc) renderSelection(loc);
@@ -499,7 +549,7 @@ async function showResult() {
 
 const clean = (s) => String(s || '').replace(/\*\*/g, '').replace(/`/g, '').trim();
 function extractSection(text, name) {
-  const m = String(text || '').match(new RegExp(`\\**${name}\\**\\s*:\\s*([\\s\\S]*?)(?=\\n\\s*\\**(?:CAUSE|FIX|VERIFIED|NOT TESTED|BROKE|HELD|My interpretation)\\b|$)`, 'i'));
+  const m = String(text || '').match(new RegExp(`\\**${name}\\**\\s*:\\s*([\\s\\S]*?)(?=\\n\\s*\\**(?:CAUSE|FIX|VERIFIED|NOT TESTED|BROKE|HELD|NOTE|My interpretation)\\b|$)`, 'i'));
   return m ? clean(m[1]).replace(/\s+/g, ' ').slice(0, 320) : '';
 }
 const firstSentence = (t) => clean(t).split(/(?<=[.!?])\s/)[0]?.slice(0, 240) || '';
@@ -636,6 +686,7 @@ function setFooter(kind) {
     failed: 'Not verified yet',
     applied: 'Applied and re-verified on your code',
     'applied-failed': 'Applied, but the real code fails a check',
+    'applied-unchecked': 'Applied. Check the result on the page',
     broken: 'Break test found problems. Nothing was changed',
     held: 'Break test passed. Nothing was changed'
   }[kind] || '';
@@ -798,19 +849,37 @@ on('applyCode', 'click', async () => {
   setStatus('Waiting for the page to reload…');
   await wait(1500);
   const ok = await reverify();
-  $('appliedSummary').textContent = `Changed ${lastApplied.files.join(', ')}. ${ok ? 'The real code passes the same checks.' : 'Check the result on the page.'}`;
+  const what = state.lastClick ? (ok ? 'Clicked again on the real code: it works now.' : 'Clicked again on the real code: it still does nothing or fails.')
+    : ok ? 'The real code passes the same checks.' : ok === null ? 'Nothing to re-check automatically: check the page.' : 'The real code fails a check: see the trace.';
+  $('appliedSummary').textContent = `Changed ${lastApplied.files.join(', ')}. ${what}`;
   $('applied').hidden = false;
-  setFooter(ok ? 'applied' : 'applied-failed');
-  session.notes.push(`The developer applied your proposed change(s) to ${lastApplied.files.join(', ')}; the re-check on the real code ${ok ? 'passed' : 'FAILED'}. The source files now contain this change.`);
-  updateLastTurn(ok ? 'Applied to code ✓' : 'Applied, re-check failed', ok ? 'ok' : 'bad');
+  setFooter(ok ? 'applied' : ok === null ? 'applied-unchecked' : 'applied-failed');
+  if (ok) state.lastClick = null;   // fixed: nothing left to click again
+  session.notes.push(`The developer applied your proposed change(s) to ${lastApplied.files.join(', ')}; the re-check on the real code ${ok ? 'passed' : ok === null ? 'was not possible (nothing to re-check)' : 'FAILED'}. The source files now contain this change.`);
+  updateLastTurn(ok ? 'Applied to code ✓' : ok === null ? 'Applied (not re-checked)' : 'Applied, re-check failed', ok ? 'ok' : ok === null ? '' : 'bad');
   await clearSelection();
 });
+
+// After Apply: click again what did nothing (or failed) before, now on the real code.
+async function reclick() {
+  if (!state.lastClick) return null;
+  const r = await runTool(tabId, 'click_and_watch', state.lastClick);
+  if (!r || r.error) { addTrace('fail', 'Could not click again on the real code', r?.error || 'No answer from the page.'); return false; }
+  const ok = !r.errors.length && (r.pageChanged || r.navigated || r.requests.some((q) => q.level === 'info'));
+  addTrace(ok ? 'pass' : 'fail', `Clicked again on the real code: ${r.summary}`, [...r.errors.map((e) => `✗ ${e.message}${e.at ? `  (${e.at})` : ''}`), ...r.requests.map((q) => `${q.level === 'info' ? '✓' : '✗'} ${q.message}`)].join('\n'));
+  return ok;
+}
 
 async function reverify() {
   const checks = state.lastPassingChecks;
   const stressOk = await rerunStress();
+  const clickOk = await reclick();
+  if (clickOk !== null) {
+    setStatus(clickOk ? 'Applied: the click now works on your code' : 'Applied, but the click still does nothing or fails', clickOk ? 'ok' : 'bad');
+    if (!checks || !clickOk) return clickOk;
+  }
   if (!checks) {
-    if (stressOk === null) { setStatus('Applied. No checks to re-run', ''); return false; }
+    if (stressOk === null) { setStatus('Applied. Nothing to re-check automatically: check the page', ''); return null; }
     setStatus(stressOk ? 'Applied, and the break test still holds on your code' : 'Applied, but the break test fails on the real code', stressOk ? 'ok' : 'bad');
     return stressOk;
   }
@@ -845,6 +914,7 @@ on('undoCode', 'click', async () => {
     addTrace('', 'Code change undone', (r.restored || []).join('\n') || r.message);
     $('applied').hidden = true;
     session.notes.push('The developer undid the last code change; the files are back to how they were before it.');
+    saveSession();
     updateLastTurn('Applied, then undone', '');
     setStatus('Undone', '');
     setFooter('idle');
@@ -864,6 +934,7 @@ on('discard', 'click', async () => {
   state.pendingEdits = [];
   if (session.turns.length) {
     session.notes.push('The developer discarded your preview; nothing was written to the code and the page is back to its original state.');
+    saveSession();
     updateLastTurn('Discarded', '');
   }
   await clearSelection();
@@ -892,6 +963,10 @@ function onStep(s) {
   }
   if (s.kind === 'result' && s.name === 'verify_responsive' && s.result?.byWidth) run.responsive = s.result;
   if (s.kind === 'result' && s.name === 'check_states' && s.result?.results) { run.states = s.result; renderStress(); }
+  if (s.kind === 'result' && s.name === 'click_and_watch' && s.result?.summary) {
+    const broken = s.result.errors.length || !(s.result.pageChanged || s.result.navigated || s.result.requests.some((q) => q.level === 'info'));
+    if (broken) state.lastClick = lastArgs.click_and_watch || {};
+  }
   if (s.kind === 'result' && s.name === 'stress_test' && s.result?.results) {
     if (!run.firstStress) run.firstStress = s.result;
     // Keep every attack's latest result: re-running one attack after a fix updates that row only.
@@ -923,6 +998,12 @@ function onStep(s) {
     const lines = s.result.results.map((r) => r.line);
     if (s.result.warnings?.length) lines.push('', 'Nearby changes:', ...s.result.warnings.map((w) => `⚠ ${w}`));
     addTrace(s.result.allPass ? 'pass' : 'fail', `← verify: ${s.result.allPass ? 'all checks pass' : 'some checks fail'}`, lines.join('\n'));
+  } else if (s.kind === 'result' && s.name === 'click_and_watch' && s.result?.summary) {
+    const r = s.result;
+    const lines = [...r.errors.map((e) => `✗ ${e.message}${e.at ? `  (${e.at})` : ''}`), ...r.requests.filter((q) => q.level === 'info').map((q) => `✓ ${q.message}`)];
+    addTrace(r.errors.length ? 'fail' : 'pass', `← clicked ${r.clicked}: ${r.summary}`, lines.join('\n'));
+  } else if (s.kind === 'result' && s.name === 'page_errors' && s.result?.entries) {
+    addTrace(s.result.entries.length ? 'fail' : 'pass', `← page errors: ${s.result.entries.length || 'none'}`, s.result.entries.map((e) => `✗ ${e.message}${e.at ? `  (${e.at})` : ''}`).join('\n'));
   } else if (s.kind === 'result' && s.name === 'check_states' && s.result?.results) {
     const lines = s.result.results.map((r) => `${r.held ? '✓' : '✗'} ${r.label}${r.changes?.length ? `  (${r.changes.join('; ')})` : ''}${r.problems?.length ? '\n   ' + r.problems.join('\n   ') : ''}`);
     addTrace(s.result.allPass ? 'pass' : 'fail', `← states: ${s.result.summary}`, lines.join('\n'));
@@ -977,4 +1058,4 @@ function addTrace(kind, label, body = '', collapsed = false) {
 
 ['apiKey', 'localUrl'].forEach((f) => $(f).addEventListener('input', updateRunButton));
 renderSelection();
-loadSettings();
+loadSettings().then(restoreSession);

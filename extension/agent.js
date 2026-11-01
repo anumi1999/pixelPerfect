@@ -10,6 +10,7 @@ First, understand the INTENT:
 - A fix to one element ("center this", "wrong padding") → work on that element with preview_css.
 - A change to a whole block, several elements, or a redesign ("make this section look like a card", "revamp this") → call get_structure on the selected container first, then change it with preview_stylesheet using the real selectors you saw. Do not reduce a block-level request to a fix of one child element.
 - If the request is ambiguous, state your interpretation in one sentence at the start of your final answer.
+- If the request contradicts itself or cannot be met as written (e.g. "3px text that is readable", "center it and align it left"), do not silently pick one part. Start your final answer with "NOTE:" saying what cannot be done as asked and why, and what you did instead (if anything). Never present a changed request as if it were the original.
 
 When a Figma design is loaded and the request is about matching the design ("match the design", "this doesn't look like Figma", or no specific value given):
 - Call get_figma_match on the selected element. If it is not confident, name the top candidates in your answer and stop, so the developer can confirm.
@@ -59,6 +60,13 @@ Break it (stress testing):
 - States: for a request about hover, focus or pressed styles ("the hover color is wrong", "I can't see focus"), use check_states to see the states, and verify with checks that have "state" (e.g. { type: "css", property: "outline-style", expected: "solid", state: "focus" }) to prove the fix.
 - To FIX a break (a follow-up like "fix the long text break"): preview the fix, then run stress_test with that attack (it must now hold) AND verify that the normal page still looks the same (e.g. css checks on the values you changed, visible). Then propose the source edit as usual.
 
+Behaviour ("the button does nothing", "the list is empty"):
+- Call click_and_watch on the element (or page_errors if no click is needed). Report what happened: the error and its file:line, the failed request and its status, or that the click did nothing at all (no handler).
+- Then read_file at that file:line to find the cause. Propose a code fix only when it is clear and small; otherwise explain the cause and where to look. Visual checks don't prove behaviour: say what you verified (e.g. "the click now sends POST /api/export → 200 and no error") by clicking again after an applied fix, and list anything you could not test.
+- Never click destructive actions; the tool refuses them. Don't click anything unless the request is about behaviour.
+- Don't invent CSS checks for a behaviour problem: visual checks prove nothing about a click. pixelPerfect clicks again automatically after the fix is applied; say so under VERIFIED ("pending: re-click after Apply").
+- A missing handler: if the request doesn't say what the button should do, call ask_developer with a one-sentence question and your proposal, and stop. pixelPerfect refuses edits that add new behaviour (handlers, functions) until the developer approves or describes it.
+
 Sessions and follow-ups:
 - The developer may send follow-up requests that refine your previous work, e.g. "only on the featured card" or "a bit darker". Use what you learned earlier in this conversation; re-inspect only what may have changed.
 - Messages tell you whether your last change was applied to the code, undone or discarded. If it was applied, the source files now contain it: read_file again and propose edits against the CURRENT file. If a follow-up narrows an applied change, revert the shared part and add the narrower rule in the same proposal (several propose_source_edit calls are fine).
@@ -76,7 +84,25 @@ Keep tool calls focused. Do not invent files or selectors that you have not seen
 // `verified` is true only if the most recent verify call passed. Auto mode uses it to decide on escalation.
 // Pass `history` (the messages returned by a previous run) to continue a session; `notes` describe what the
 // developer did since (applied, undid, discarded).
-export async function runAgent({ goal, element, tabId, settings, onStep, context = '', history = null, notes = [], maxSteps = 30 }) {
+// The developer has to approve new behaviour (e.g. what a button with no handler should do):
+// the agent asks with ask_developer, the run stops, and the answer arrives as the next request.
+const ASK_TOOL = { type: 'function', function: {
+  name: 'ask_developer',
+  description: 'Ask the developer a question and stop, e.g. to approve new behaviour before adding it ("The Export button has no handler. Should it download the campaigns table as CSV?"). Their answer arrives as the next request in this session.',
+  parameters: { type: 'object', properties: { question: { type: 'string' }, proposal: { type: 'string', description: 'What you would do if they say yes, in one sentence.' } }, required: ['question'] }
+} };
+// Words that mean the developer already said what should happen ("it should download…").
+const SPECIFIES = /\b(should|make it|so that|wire it|hook it|has to|needs to|must|i want it to|approve|approved|yes|go ahead|do it)\b/i;
+// New behaviour in an edit: an event handler or a new function that wasn't there before.
+function addsBehaviour(find = '', replace = '') {
+  const count = (s, re) => (s.match(re) || []).length;
+  return ['=>', 'function', /\bon[A-Z][a-zA-Z]+=/.source].some((p) => {
+    const re = new RegExp(p.replace(/[=>]/g, (c) => (p === '=>' || p === 'function' ? `\\${c}` : c)), 'g');
+    return count(replace, re) > count(find, re);
+  });
+}
+
+export async function runAgent({ goal, element, tabId, settings, onStep, context = '', history = null, notes = [], approved = false, maxSteps = 30 }) {
   const messages = history?.length
     ? [...history, { role: 'user', content: [
         'Follow-up request in the same session.',
@@ -97,6 +123,7 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
   let verifiedPreview;         // the preview that was on the page when verify last passed
   let sawFailure = false;      // some verify failed: there was something to fix
   let checked = false;         // a verify or break test has run
+  let clickBroken = false;     // click_and_watch showed a click that does nothing or fails
   let changedFirst = false;    // the agent previewed a change before its first check (e.g. a follow-up fix)
   let acceptance = null;       // the checks of the first failing verify: the bar a fix must clear
   let specAcceptance = null;   // the checks of the last Figma spec loaded: the fix must meet the design, not a subset
@@ -128,10 +155,24 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
       onStep({ kind: 'tool', name: call.function.name, args });
 
       const name = call.function.name;
+      // The agent asks the developer and the run stops here; the answer comes as the next request.
+      if (name === 'ask_developer') {
+        const q = `${args.question || 'Can you confirm how this should work?'}${args.proposal ? `\n\nIf yes: ${args.proposal}` : ''}`;
+        messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify({ asked: true }) });
+        const text = `QUESTION: ${q}`;
+        messages.push({ role: 'assistant', content: text });
+        onStep({ kind: 'final', text });
+        return { text, verified: false, stoppedEarly: false, asked: true, messages: compactHistory(messages) };
+      }
+      // Guard: new behaviour needs the developer's approval, unless the request already says what should happen.
+      const needsApproval = name === 'propose_source_edit' && clickBroken && !approved && !SPECIFIES.test(goal) && addsBehaviour(args.find, args.replace);
       // Guard: no source change when every check passed before anything was changed.
-      const result = name === 'propose_source_edit' && !sawFailure && !changedFirst
+      const result = needsApproval
+        ? { error: 'Not proposed: this adds new behaviour the developer has not described or approved. Call ask_developer now with a one-sentence question ("Should the Export button download the campaigns table as CSV?") and your proposal; the developer decides.' }
+        : name === 'propose_source_edit' && !sawFailure && !changedFirst && !clickBroken && !approved
         ? { error: 'Not proposed: every check already passed before any change, so the request is already met. Do not change the code. Tell the developer it already matches, with the verify numbers.' }
         : await runTool(tabId, name, args);
+      if (name === 'click_and_watch' && result?.summary && (result.errors?.length || /did nothing/.test(result.summary))) clickBroken = true;
       if ((name === 'verify' || name === 'verify_responsive') && result && !result.error) {
         // Lock the acceptance checks: the first failing verify sets them. A later verify only counts
         // if it still includes every one of them with the same expected value (extra checks are fine).
@@ -237,7 +278,7 @@ export async function callMuseSpark(messages, { apiKey, model, baseUrl }, withTo
     body: JSON.stringify({
       model,
       messages,
-      ...(withTools ? { tools: TOOLS, tool_choice: 'auto' } : {})
+      ...(withTools ? { tools: [...TOOLS, ASK_TOOL], tool_choice: 'auto' } : {})
     })
     });
   } catch (err) {
@@ -248,6 +289,9 @@ export async function callMuseSpark(messages, { apiKey, model, baseUrl }, withTo
   }
   if (!res.ok) {
     const body = await res.text();
+    if (/127\.0\.0\.1|localhost/.test(baseUrl) && res.status === 403) {
+      throw new Error(`The local server refused the extension (403). For Ollama, allow it: OLLAMA_ORIGINS="chrome-extension://*" and restart Ollama.`);
+    }
     throw new Error(`${baseUrl} returned ${res.status}: ${body.slice(0, 300)}`);
   }
   const data = await res.json();

@@ -74,6 +74,76 @@
     return null;
   }
 
+  // ── Console and network log (for "the button does nothing") ─────────────────
+  // Records errors, warnings and requests from the moment pixelPerfect is opened on the page.
+  const log = [];
+  const push = (entry) => { log.push({ t: performance.now(), ...entry }); if (log.length > 200) log.shift(); };
+  const short = (v) => {
+    if (v instanceof Error) return `${v.name}: ${v.message}`;
+    if (typeof v === 'string') return v.slice(0, 300);
+    try { return JSON.stringify(v).slice(0, 300); } catch { return String(v).slice(0, 300); }
+  };
+  // The first stack frame from this site's own code: that's where to look.
+  const where = (stack) => {
+    const lines = String(stack || '').split('\n');
+    for (const l of lines) {
+      const m = l.match(/(https?:\/\/[^\s)]+):(\d+):(\d+)/);
+      if (m && m[1].startsWith(location.origin) && !/node_modules|\.vite\/deps|chrome-extension/.test(m[1])) {
+        return `${m[1].slice(location.origin.length).replace(/\?.*$/, '')}:${m[2]}`;
+      }
+    }
+    return null;
+  };
+
+  window.addEventListener('error', (e) => {
+    if (e.target && e.target !== window && (e.target.src || e.target.href)) {
+      push({ kind: 'resource', level: 'error', message: `failed to load ${e.target.tagName.toLowerCase()} ${(e.target.src || e.target.href).slice(0, 200)}` });
+    } else {
+      push({ kind: 'exception', level: 'error', message: short(e.error || e.message), at: where(e.error?.stack) || (e.filename ? `${e.filename.replace(location.origin, '').replace(/\?.*$/, '')}:${e.lineno}` : null) });
+    }
+  }, true);
+  window.addEventListener('unhandledrejection', (e) => {
+    push({ kind: 'exception', level: 'error', message: `Unhandled promise rejection: ${short(e.reason)}`, at: where(e.reason?.stack) });
+  });
+  for (const level of ['error', 'warn']) {
+    const orig = console[level];
+    console[level] = function (...args) {
+      try { push({ kind: 'console', level, message: args.map(short).join(' ').slice(0, 400), at: where(new Error().stack.split('\n').slice(2).join('\n')) }); } catch {}
+      return orig.apply(this, args);
+    };
+  }
+  const origFetch = window.fetch;
+  if (origFetch) {
+    window.fetch = async function (input, init) {
+      const url = String(input?.url || input).slice(0, 200);
+      const method = (init?.method || input?.method || 'GET').toUpperCase();
+      const t0 = performance.now();
+      try {
+        const res = await origFetch.apply(this, arguments);
+        push({ kind: 'request', level: res.ok ? 'info' : 'error', message: `${method} ${url} → ${res.status}`, status: res.status, ms: Math.round(performance.now() - t0) });
+        return res;
+      } catch (err) {
+        push({ kind: 'request', level: 'error', message: `${method} ${url} → failed (${short(err)})`, ms: Math.round(performance.now() - t0) });
+        throw err;
+      }
+    };
+  }
+  const XO = XMLHttpRequest.prototype.open, XS = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (method, url) { this.__pp = { method: String(method).toUpperCase(), url: String(url).slice(0, 200) }; return XO.apply(this, arguments); };
+  XMLHttpRequest.prototype.send = function () {
+    const t0 = performance.now();
+    this.addEventListener('loadend', () => {
+      const ok = this.status >= 200 && this.status < 400;
+      push({ kind: 'request', level: ok ? 'info' : 'error', message: `${this.__pp?.method} ${this.__pp?.url} → ${this.status || 'failed'}`, status: this.status, ms: Math.round(performance.now() - t0) });
+    });
+    return XS.apply(this, arguments);
+  };
+
+  window.addEventListener('pp:log', (e) => {
+    const since = Number(e.detail) || 0;
+    window.dispatchEvent(new CustomEvent('pp:log-result', { detail: JSON.stringify({ now: performance.now(), entries: log.filter((x) => x.t >= since) }) }));
+  });
+
   window.addEventListener('pp:inspect', () => {
     const el = document.querySelector('[data-pp-inspect]');
     let result = null;

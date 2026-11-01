@@ -26,7 +26,16 @@ if (!window.__ppContentLoaded) {
       return;
     }
     if (msg.type === 'PP_TOOL') {
-      try { reply(runTool(msg.name, msg.args || {})); }
+      try {
+        const result = runTool(msg.name, msg.args || {});
+        // Break tests move the page around and put it back: redraw the numbered outlines where things are now.
+        if (/^(stress|states)/.test(msg.name)) requestAnimationFrame(() => placeMarkers());
+        if (result && typeof result.then === 'function') {
+          result.then(reply, (err) => reply({ error: String(err.message || err) }));
+          return true;   // keep the channel open for the async reply
+        }
+        reply(result);
+      }
       catch (err) { reply({ error: String(err.message || err) }); }
     }
   });
@@ -58,6 +67,8 @@ if (!window.__ppContentLoaded) {
       case 'states_freeze': return globalThis.ppStatesFreeze(!!args.on);
       case 'states_disabled': return globalThis.ppStatesDisabled(args.key, !!args.on);
       case 'states_cleanup': return globalThis.ppStatesCleanup(!!args.keep);
+      case 'page_errors': return pageLog(0, args.only_errors !== false);
+      case 'click_and_watch': return clickAndWatch(el, args);
       case 'stress_scan': return globalThis.ppStressScan
         ? globalThis.ppStressScan(el)
         : { error: 'stress.js is not loaded. Pick the element again.' };
@@ -328,6 +339,61 @@ if (!window.__ppContentLoaded) {
       note: 'Source order: later rules win when specificity is equal. Inline style beats all non-!important rules.',
       inlineStyle: el.getAttribute('style') || null,
       rules: found.slice(-limit)
+    };
+  }
+
+  // ── Console and network (recorded by page-main.js in the page's own world) ──
+  function readLog(since) {
+    let out = null;
+    const onResult = (e) => { try { out = JSON.parse(e.detail); } catch { out = null; } };
+    window.addEventListener('pp:log-result', onResult, { once: true });
+    window.dispatchEvent(new CustomEvent('pp:log', { detail: String(since) }));
+    window.removeEventListener('pp:log-result', onResult);
+    return out;
+  }
+
+  function pageLog(since, onlyErrors = true) {
+    const log = readLog(since);
+    if (!log) return { error: 'The page log is not available. Pick the element again so pixelPerfect can attach to the page.' };
+    const entries = log.entries.filter((e) => !onlyErrors || e.level !== 'info').slice(-30);
+    return { entries: entries.map(({ t, ...e }) => e), note: 'Recorded since pixelPerfect was opened on this page (errors before that are not seen).' };
+  }
+
+  // Clicks the selected element (or a target inside it) and reports what happened in the next moments:
+  // errors, requests, whether the page changed at all. For "this button does nothing".
+  const RISKY = /\b(delete|remove|pay|purchase|buy|checkout|order|submit|send|transfer|confirm|sign ?out|log ?out|unsubscribe|deactivate|cancel (?:plan|subscription))\b/i;
+  async function clickAndWatch(root, { target, wait_ms = 1500 } = {}) {
+    const el = target ? globalThis.ppResolveTarget?.(root, target) : root;
+    if (!el) return { error: 'Nothing to click: the target was not found inside the selected element.' };
+    const label = (el.innerText || el.getAttribute('aria-label') || el.value || '').trim().replace(/\s+/g, ' ').slice(0, 40);
+    if (RISKY.test(label)) return { error: `Not clicked: "${label}" looks like an action with real effects (delete, pay, send…). Ask the developer to click it themselves, then call page_errors.` };
+    const before = readLog(0);
+    if (!before) return { error: 'The page log is not available. Pick the element again so pixelPerfect can attach to the page.' };
+    let mutations = 0;
+    const mo = new MutationObserver((list) => {
+      for (const m of list) if (!(m.target.id || '').startsWith('__pp') && !m.target.closest?.('[id^="__pp"]')) mutations++;
+    });
+    mo.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+    const url = location.href;
+    el.click();
+    await new Promise((r) => setTimeout(r, Math.min(Math.max(wait_ms, 300), 5000)));
+    mo.disconnect();
+    const after = readLog(before.now);
+    const entries = (after?.entries || []).map(({ t, ...e }) => e);
+    const errors = entries.filter((e) => e.level !== 'info');
+    const requests = entries.filter((e) => e.kind === 'request');
+    const nothing = !mutations && !requests.length && url === location.href && !errors.length;
+    return {
+      clicked: `<${el.tagName.toLowerCase()}> "${label}"`,
+      errors,
+      requests,
+      pageChanged: mutations > 0,
+      domChanges: mutations,
+      navigated: url !== location.href,
+      summary: errors.length
+        ? `${errors.length} error(s) after the click`
+        : nothing ? 'The click did nothing: no page change, no request, no error (likely no handler, or a handler that returns early)' : 'The click worked: the page changed or a request succeeded',
+      note: 'The click was real: undo any change it made if needed.'
     };
   }
 
