@@ -9,6 +9,7 @@ The developer has selected one or more elements on their running web app (number
 First, understand the INTENT:
 - A fix to one element ("center this", "wrong padding") → work on that element with preview_css.
 - A change to a whole block, several elements, or a redesign ("make this section look like a card", "revamp this") → call get_structure on the selected container first, then change it with preview_stylesheet using the real selectors you saw. Do not reduce a block-level request to a fix of one child element.
+- A question ("are there errors?", "why is this off?", "what font is this?") gets an answer, not a change: inspect and measure, then answer. Do not call preview_css, preview_stylesheet or propose_source_edit unless the developer asks for a fix.
 - If the request is ambiguous, state your interpretation in one sentence at the start of your final answer.
 - If the request contradicts itself or cannot be met as written (e.g. "3px text that is readable", "center it and align it left"), do not silently pick one part. Start your final answer with "NOTE:" saying what cannot be done as asked and why, and what you did instead (if anything). Never present a changed request as if it were the original.
 
@@ -92,6 +93,11 @@ const ASK_TOOL = { type: 'function', function: {
   parameters: { type: 'object', properties: { question: { type: 'string' }, proposal: { type: 'string', description: 'What you would do if they say yes, in one sentence.' } }, required: ['question'] }
 } };
 // Words that mean the developer already said what should happen ("it should download…").
+// A question ("are there errors?") gets an answer, not a change. A request that also asks for a fix is not a question.
+const QUESTION = /^\s*(are|is|was|were|do|does|did|why|what|which|where|who|how|any|has|have)\b|\?\s*$/i;
+const ASKS_FIX = /\b(fix|make|change|center|centre|align|remove|delete|add|set|update|correct|adjust|move|apply|increase|decrease|reduce|match|resize|wrap|hide|show|stop|clean)\b/i;
+const isQuestion = (goal = '') => QUESTION.test(goal) && !ASKS_FIX.test(goal);
+const CHANGES = new Set(['preview_css', 'preview_stylesheet', 'undo_preview', 'propose_source_edit', 'withdraw_source_edit']);
 const SPECIFIES = /\b(should|make it|so that|wire it|hook it|has to|needs to|must|i want it to|approve|approved|yes|go ahead|do it)\b/i;
 // New behaviour in an edit: an event handler or a new function that wasn't there before.
 function addsBehaviour(find = '', replace = '') {
@@ -129,9 +135,13 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
   let specAcceptance = null;   // the checks of the last Figma spec loaded: the fix must meet the design, not a subset
   let specPending = null;      // a spec that was loaded but not used yet: it locks once a verify uses any of its checks
 
+  // A question: no change tools at all, a smaller budget, and a nudge to answer before it runs out.
+  const question = isQuestion(goal) && !approved;
+  if (question) maxSteps = Math.min(maxSteps, 15);
   for (let step = 1; step <= maxSteps; step++) {
     onStep({ kind: 'thinking', step });
-    const reply = await callMuseSpark(messages, settings);
+    if (question && step === maxSteps - 2) messages.push({ role: 'user', content: 'Two steps left. Stop investigating and answer the question now from what you found.' });
+    const reply = await callMuseSpark(messages, settings, true, question ? CHANGES : null);
 
     if (!reply.tool_calls?.length) {
       // Safety net: a verified fix, but no proposed edit while the code is reachable. Remind once.
@@ -167,7 +177,9 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
       // Guard: new behaviour needs the developer's approval, unless the request already says what should happen.
       const needsApproval = name === 'propose_source_edit' && clickBroken && !approved && !SPECIFIES.test(goal) && addsBehaviour(args.find, args.replace);
       // Guard: no source change when every check passed before anything was changed.
-      const result = needsApproval
+      const result = CHANGES.has(name) && isQuestion(goal) && !approved
+        ? { error: 'Not done: the developer asked a question, not for a change. Answer it with what you found (file:line, numbers, cause). Do not preview or edit; end by offering the fix in one sentence.' }
+        : needsApproval
         ? { error: 'Not proposed: this adds new behaviour the developer has not described or approved. Call ask_developer now with a one-sentence question ("Should the Export button download the campaigns table as CSV?") and your proposal; the developer decides.' }
         : name === 'propose_source_edit' && !sawFailure && !changedFirst && !clickBroken && !approved
         ? { error: 'Not proposed: every check already passed before any change, so the request is already met. Do not change the code. Tell the developer it already matches, with the verify numbers.' }
@@ -222,7 +234,9 @@ export async function runAgent({ goal, element, tabId, settings, onStep, context
   // still gets CAUSE / FIX / VERIFIED / NOT TESTED instead of nothing.
   let msg = `Stopped after ${maxSteps} steps without finishing. Handing back to you.`;
   try {
-    messages.push({ role: 'user', content: 'You are out of steps. Do not call tools. Give your final answer now in the usual format (CAUSE / FIX / VERIFIED / NOT TESTED), only about what you actually did and verified. Start with "Stopped at the step limit."' });
+    messages.push({ role: 'user', content: question
+      ? 'Do not call tools. Answer the developer\'s question now from what you found: each issue with where it is (file:line or element) and the numbers. End by offering to fix them in one sentence. Do not mention steps.'
+      : 'You are out of steps. Do not call tools. Give your final answer now in the usual format (CAUSE / FIX / VERIFIED / NOT TESTED), only about what you actually did and verified. Start with "Stopped at the step limit."' });
     const last = await callMuseSpark(messages, settings, false);
     if (last?.content) msg = last.content;
   } catch {}
@@ -269,7 +283,7 @@ export function compactHistory(messages, { keepFullFromLastTurns = 1, maxToolCha
 
 // One chat-completions call with tools. Works for Muse Spark on the Meta Model API
 // and for Muse Glimmer on a local llama.cpp server: both use the same format.
-export async function callMuseSpark(messages, { apiKey, model, baseUrl }, withTools = true) {
+export async function callMuseSpark(messages, { apiKey, model, baseUrl }, withTools = true, without = null) {
   let res;
   try {
     res = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
@@ -278,7 +292,7 @@ export async function callMuseSpark(messages, { apiKey, model, baseUrl }, withTo
     body: JSON.stringify({
       model,
       messages,
-      ...(withTools ? { tools: [...TOOLS, ASK_TOOL], tool_choice: 'auto' } : {})
+      ...(withTools ? { tools: [...TOOLS, ASK_TOOL].filter((t) => !without?.has(t.function?.name ?? t.name)), tool_choice: 'auto' } : {})
     })
     });
   } catch (err) {

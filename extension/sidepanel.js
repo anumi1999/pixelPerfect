@@ -111,7 +111,7 @@ function updateLastTurn(outcome, kind) {
 }
 
 function resetRunView() {
-  Object.assign(run, { previewed: false, firstFailing: null, lastVerify: null, responsive: null, answer: '', verified: false, previews: [], stress: null, firstStress: null, states: null });
+  Object.assign(run, { previewed: false, firstFailing: null, lastVerify: null, responsive: null, answer: '', verified: false, previews: [], stress: null, firstStress: null, states: null, applied: null, lastClickResult: null });
   $('stressCard').hidden = true;
   shownAttack = null;
   for (const id of ['causeBlock', 'previewCard', 'checksCard', 'diffCard', 'actionBar', 'applied']) $(id).hidden = true;
@@ -205,6 +205,7 @@ async function checkBridge() {
   try {
     const info = await bridgeRequest('hello', {}, 5000);
     settingsStatus(`Bridge connected: ${info.project} (${info.sourceFiles} source files)`, 'ok');
+    loadSavedChecks();
     addTrace('pass', `Bridge connected: ${info.project}`, `${info.sourceFiles} source files in ${info.root}`);
     return true;
   } catch (err) {
@@ -296,14 +297,26 @@ function setStepper(stage) {
   });
 }
 
+// Puts pixelPerfect's page scripts into the tab (safe to call again: each script loads once).
+async function ensureInjected() {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['page-main.js'], world: 'MAIN' });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['verify.js', 'stress.js', 'states.js', 'content.js'] });
+    return true;
+  } catch (err) {
+    setStatus('pixelPerfect cannot run on this page', 'bad');
+    addTrace('error', 'Could not attach to the page', `${err.message}\nThis works on normal web pages and localhost, not on chrome:// pages.`);
+    return false;
+  }
+}
+
 // ── Picking elements ──────────────────────────────────────────────────────────
 on('pick', 'click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
   tabId = tab.id;
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['page-main.js'], world: 'MAIN' });
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['verify.js', 'stress.js', 'states.js', 'content.js'] });
+    if (!(await ensureInjected())) return;
     await chrome.tabs.sendMessage(tabId, { type: 'PP_PICK' });
     $('pick').textContent = 'Picking… (Esc to stop)';
   } catch (err) {
@@ -500,8 +513,10 @@ async function showResult() {
   }
   if (cause || run.answer) {
     $('causeBlock').hidden = false;
-    $('causeBlock').querySelector('h3').textContent = isBreak ? 'What breaks and why' : alreadyMet ? 'Already matches' : 'Root Cause';
-    $('causeText').textContent = (note ? `⚠ ${note}\n\n` : '') + (cause || firstSentence(run.answer));
+    // A plain answer (a question, nothing changed): show all of it, not just the first sentence.
+    const answered = !isBreak && !alreadyMet && !hasChanges && !run.lastVerify && !cause;
+    $('causeBlock').querySelector('h3').textContent = isBreak ? 'What breaks and why' : alreadyMet ? 'Already matches' : answered ? 'Answer' : 'Root Cause';
+    $('causeText').textContent = (note ? `⚠ ${note}\n\n` : '') + (cause || (answered ? cut(clean(run.answer), 1500) : firstSentence(run.answer)));
   }
   const loc = edits[0] ? { file: edits[0].file.split('/').pop(), line: firstChangedLine(edits[0]) } : null;
   if (loc) renderSelection(loc);
@@ -540,6 +555,7 @@ async function showResult() {
   else if (alreadyMet) { setStatus('Already matches. Nothing to change', 'ok'); setFooter('already'); summary = { outcome: 'Already matches, nothing changed', kind: 'ok' }; }
   else if (run.verified && responsiveOk) { setStatus('Fix ready to apply', 'ok'); setFooter('verified-all'); summary = { outcome: `Verified fix${edits.length ? ` ready: ${edits[0].file.split('/').pop()}` : ''}`, kind: 'ok' }; }
   else if (run.verified) { setStatus('Fix ready to apply', 'ok'); setFooter('verified-one'); summary = { outcome: `Verified fix${edits.length ? ` ready: ${edits[0].file.split('/').pop()}` : ''}`, kind: 'ok' }; }
+  else if (!hasChanges && !edits.length && run.answer) { setStatus('Answered', 'ok'); setFooter('idle'); summary = { outcome: `Answered: ${firstSentence(run.answer)}`, kind: '' }; }
   else if (run.lastVerify) { setStatus('Not verified: see Checks', 'bad'); setFooter('failed'); summary = { outcome: 'Not verified', kind: 'bad' }; }
   else { setStatus(run.answer ? 'Done' : 'Stopped', run.answer ? '' : 'bad'); setFooter('idle'); summary = { outcome: firstSentence(run.answer) || 'Stopped', kind: run.answer ? '' : 'bad' }; }
 
@@ -547,12 +563,14 @@ async function showResult() {
   return summary;
 }
 
+// Shortens at a word boundary and marks the cut, so text never ends mid-word.
+const cut = (t, n) => (t.length <= n ? t : t.slice(0, n).replace(/\s+\S*$/, '') + '…');
 const clean = (s) => String(s || '').replace(/\*\*/g, '').replace(/`/g, '').trim();
 function extractSection(text, name) {
   const m = String(text || '').match(new RegExp(`\\**${name}\\**\\s*:\\s*([\\s\\S]*?)(?=\\n\\s*\\**(?:CAUSE|FIX|VERIFIED|NOT TESTED|BROKE|HELD|NOTE|My interpretation)\\b|$)`, 'i'));
-  return m ? clean(m[1]).replace(/\s+/g, ' ').slice(0, 320) : '';
+  return m ? cut(clean(m[1]).replace(/\s+/g, ' '), 320) : '';
 }
-const firstSentence = (t) => clean(t).split(/(?<=[.!?])\s/)[0]?.slice(0, 240) || '';
+const firstSentence = (t) => cut(clean(t).replace(/\s+/g, ' ').split(/(?<=[.!?])\s/)[0] || '', 160);
 function firstChangedLine(edit) {
   const m = (edit.diff || '').match(/^- (\d+)/m) || (edit.diff || '').match(/^\s+(\d+) /m);
   return m ? Number(m[1]) + (/^- /m.test(edit.diff) ? 0 : 1) : edit.line;
@@ -833,7 +851,7 @@ on('applyCode', 'click', async () => {
   setStatus('Writing to your files…');
   try {
     const result = await bridgeRequest('apply_edits', { edits, label: (session.turns.at(-1)?.goal || $('goal').value.trim()).slice(0, 80) });
-    lastApplied = { file: state.pendingEdits[0].file, line: state.pendingEdits[0].line, files: result.files };
+    lastApplied = { file: state.pendingEdits[0].file, line: state.pendingEdits[0].line, files: result.files, edits: state.pendingEdits.map((e) => ({ ...e })) };
     addTrace('pass', `Applied to code: ${result.files.join(', ')}`, state.pendingEdits.map((e) => `${e.file}:${e.line}  ${e.reason}`).join('\n'));
   } catch (err) {
     addTrace('error', 'Could not apply to code', err.message);
@@ -848,6 +866,7 @@ on('applyCode', 'click', async () => {
   $('diffCard').hidden = true;
   setStatus('Waiting for the page to reload…');
   await wait(1500);
+  const clickArgs = state.lastClick;
   const ok = await reverify();
   const what = state.lastClick ? (ok ? 'Clicked again on the real code: it works now.' : 'Clicked again on the real code: it still does nothing or fails.')
     : ok ? 'The real code passes the same checks.' : ok === null ? 'Nothing to re-check automatically: check the page.' : 'The real code fails a check: see the trace.';
@@ -857,7 +876,184 @@ on('applyCode', 'click', async () => {
   if (ok) state.lastClick = null;   // fixed: nothing left to click again
   session.notes.push(`The developer applied your proposed change(s) to ${lastApplied.files.join(', ')}; the re-check on the real code ${ok ? 'passed' : ok === null ? 'was not possible (nothing to re-check)' : 'FAILED'}. The source files now contain this change.`);
   updateLastTurn(ok ? 'Applied to code ✓' : ok === null ? 'Applied (not re-checked)' : 'Applied, re-check failed', ok ? 'ok' : ok === null ? '' : 'bad');
+  run.applied = { files: lastApplied.files, ok };
+  if (ok) await saveRegressionCheck(clickArgs);
   await clearSelection();
+});
+
+// ── Saved checks: every verified fix becomes a check you can re-run later ─────
+async function pagePath() {
+  try { const t = await chrome.tabs.get(tabId); const u = new URL(t.url); return u.pathname + u.hash; } catch { return '/'; }
+}
+
+async function saveRegressionCheck(clickArgs) {
+  const sel = await runTool(tabId, 'stable_selector', { element: 0 });
+  if (!sel?.selector) return;
+  const entry = {
+    title: (session.turns.at(-1)?.goal || 'Fix').slice(0, 120),
+    page: await pagePath(),
+    selector: sel.selector,
+    checks: state.lastPassingChecks || null,
+    widths: run.responsive?.allPass ? (run.responsive.byWidth || []).map((w) => w.width) : null,
+    stress: state.lastStress ? (state.lastStress.attacks?.length ? state.lastStress.attacks : 'all') : null,
+    click: clickArgs ? { target: clickArgs.target || null } : null,
+    files: lastApplied?.files || []
+  };
+  if (!entry.checks && !entry.stress && !entry.click) return;
+  try {
+    const r = await bridgeRequest('save_checks', { entry });
+    addTrace('pass', `Saved as a regression check (${r.total} in ${r.file})`, `${entry.title}\n${entry.selector} on ${entry.page}`);
+    $('appliedSummary').textContent += ' Saved as a regression check.';
+    await loadSavedChecks();
+  } catch (err) { addTrace('fail', 'Could not save the regression check', err.message); }
+}
+
+let savedChecks = [];
+let lastRerun = null;
+async function loadSavedChecks() {
+  try { savedChecks = (await bridgeRequest('list_checks', {}, 5000)).checks || []; } catch { savedChecks = []; }
+  renderSaved();
+}
+
+function renderSaved(results = lastRerun?.results) {
+  $('savedCard').hidden = !savedChecks.length;
+  $('savedCount').textContent = savedChecks.length ? String(savedChecks.length) : '';
+  $('savedCount').className = 'count' + (results?.some((r) => !r.ok) ? ' bad' : '');
+  $('savedList').replaceChildren(...savedChecks.map((c) => {
+    const r = results?.find((x) => x.id === c.id);
+    const li = document.createElement('li');
+    li.className = !r ? 'na' : r.ok ? 'held' : 'broke';
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<svg class="state"><use href="#${!r || r.ok ? 'i-check-circle' : 'i-x-circle'}"/></svg><span class="name"></span>`;
+    row.querySelector('.name').textContent = c.title;
+    li.appendChild(row);
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = `${c.page} · ${[c.checks ? `${c.checks.length} checks` : '', c.widths ? `${c.widths.length} widths` : '', c.stress ? 'break test' : '', c.click ? 'click' : ''].filter(Boolean).join(', ')}${r ? ` · ${r.summary}` : ''}`;
+    li.appendChild(meta);
+    if (r && !r.ok && r.lines?.length) {
+      const ul = document.createElement('ul');
+      ul.className = 'problems';
+      for (const p of r.lines.slice(0, 4)) { const i = document.createElement('li'); i.textContent = p; ul.appendChild(i); }
+      li.appendChild(ul);
+    }
+    return li;
+  }));
+}
+
+on('rerunChecks', 'click', async () => {
+  if (running) return;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) return;
+  tabId = tab.id;
+  if (!(await ensureInjected())) return;
+  await loadSavedChecks();
+  const page = await pagePath();
+  const here = savedChecks.filter((c) => c.page === page);
+  if (!here.length) { setStatus(`No saved checks for this page (${page})`, ''); return; }
+  running = true; updateRunButton();
+  $('rerunChecks').disabled = true;
+  const results = [];
+  for (const c of here) {
+    setStatus(`Re-running: ${c.title.slice(0, 50)}…`);
+    const lines = [];
+    let ok = true, note = '';
+    const sel = await sendToPage({ type: 'PP_SELECT', selector: c.selector });
+    if (!sel || sel.error) { results.push({ id: c.id, ok: false, summary: 'element not found', lines: [sel?.error || 'The page did not answer.'] }); continue; }
+    if (c.checks) {
+      const v = await runTool(tabId, 'verify', { checks: c.checks });
+      if (v?.error || !v?.allPass) { ok = false; lines.push(...(v?.results || []).filter((x) => !x.pass).map((x) => x.line), ...(v?.error ? [v.error] : [])); }
+    }
+    if (ok && c.widths && c.checks) {
+      const rv = await runTool(tabId, 'verify_responsive', { checks: c.checks.filter((x) => !x.state), widths: c.widths });
+      if (!rv?.allPass) { ok = false; lines.push(...(rv?.byWidth || []).filter((w) => !w.allPass).map((w) => `at ${w.width}px: ${w.lines.filter((l) => l.startsWith('✗')).join('; ')}`)); }
+    }
+    if (c.stress) {
+      const st = await runTool(tabId, 'stress_test', { attacks: c.stress === 'all' ? [] : c.stress });
+      const broke = (st?.results || []).filter((x) => !x.held);
+      if (broke.length) { ok = false; lines.push(...broke.map((x) => `${x.label}: ${x.problems[0] || 'broke'}`)); }
+    }
+    if (c.click) {
+      const cl = await runTool(tabId, 'click_and_watch', { target: c.click.target || undefined });
+      const works = cl && !cl.error && !cl.errors?.length && (cl.pageChanged || cl.navigated || cl.requests?.some((q) => q.level === 'info'));
+      if (!works) { ok = false; lines.push(`click: ${cl?.error || cl?.summary || 'no answer'}`); }
+      else note = 'click works';
+    }
+    results.push({ id: c.id, title: c.title, ok, summary: ok ? `passed${note ? ` (${note})` : ''}` : 'REGRESSED', lines });
+    addTrace(ok ? 'pass' : 'fail', `Saved check ${ok ? 'passed' : 'REGRESSED'}: ${c.title}`, lines.join('\n'));
+  }
+  lastRerun = { at: new Date(), page, results };
+  renderSaved(results);
+  await clearSelection();
+  running = false; updateRunButton();
+  $('rerunChecks').disabled = false;
+  const bad = results.filter((r) => !r.ok).length;
+  setStatus(bad ? `${bad} of ${results.length} saved checks regressed: see Saved checks` : `All ${results.length} saved checks still pass`, bad ? 'bad' : 'ok');
+  setFooter(bad ? 'failed' : 'verified-one');
+});
+
+// ── Verification report (Markdown), saved into the project or downloaded ──────
+function reportMarkdown() {
+  const L = [];
+  const goal = session.turns.at(-1)?.goal || $('goal').value.trim() || '(no request)';
+  const el = elements[0];
+  L.push(`# pixelPerfect verification report`, '');
+  L.push(`- **Request:** ${goal}`);
+  L.push(`- **Date:** ${new Date().toLocaleString()}`);
+  if (el) L.push(`- **Element:** \`${el.tag}${(el.classes || []).map((c) => '.' + c).join('')}\`${el.source ? ` (${el.source})` : ''}`);
+  L.push(`- **Result:** ${$('status').textContent || ''}`);
+  if (run.applied) L.push(`- **Applied to:** ${run.applied.files.join(', ')} · re-check on the real code: ${run.applied.ok ? 'passed' : run.applied.ok === null ? 'not possible' : 'FAILED'}`);
+  L.push('');
+  if (run.answer) L.push('## Agent answer', '', run.answer.trim(), '');
+  if (run.lastVerify?.results?.length) {
+    L.push('## Checks', '', '| | Target | Check | Expected | Measured |', '| --- | --- | --- | --- | --- |');
+    for (const r of run.lastVerify.results) L.push(`| ${r.pass ? '✓' : '✗'} | ${String(r.target || '').replace(/\|/g, '/')} | ${(r.state ? `[${r.state}] ` : '') + (r.summary || '').split(':')[0]} | ${String(r.expected ?? '').replace(/\|/g, '/')} | ${String(r.actual ?? '').replace(/\|/g, '/')} |`);
+    L.push('');
+  }
+  if (run.responsive?.byWidth) {
+    L.push('## Screen widths', '');
+    for (const w of run.responsive.byWidth) L.push(`- ${w.allPass ? '✓' : '✗'} ${w.width}px`);
+    L.push('');
+  }
+  const br = breakResults();
+  if (br.length) {
+    L.push('## Break test', '');
+    for (const r of br) L.push(`- ${!r.applicable ? '–' : r.held ? '✓' : '✗'} ${r.label}${r.problems?.length ? `: ${r.problems.slice(0, 2).join('; ')}` : ''}`);
+    L.push('');
+  }
+  if (run.lastClickResult) {
+    const c = run.lastClickResult;
+    L.push('## Behaviour', '', `- Clicked ${c.clicked}: ${c.summary}`, ...c.errors.map((e) => `- ✗ ${e.message}${e.at ? ` (${e.at})` : ''}`), ...c.requests.map((q) => `- ${q.level === 'info' ? '✓' : '✗'} ${q.message}`), '');
+  }
+  const edits = state.pendingEdits.length ? state.pendingEdits : run.applied ? (lastApplied?.edits || []) : [];
+  if (edits.length) {
+    L.push(run.applied && !state.pendingEdits.length ? '## Code change (applied)' : '## Proposed code change', '');
+    for (const e of edits) L.push(`**${e.file}:${e.line}** · ${e.reason || ''}`, '', '```diff', e.diff || '', '```', '');
+  }
+  if (lastRerun) {
+    L.push(`## Saved checks re-run (${lastRerun.page}, ${lastRerun.at.toLocaleString()})`, '');
+    for (const r of lastRerun.results) L.push(`- ${r.ok ? '✓' : '✗'} ${r.title || r.id}: ${r.summary}${r.lines?.length ? ` · ${r.lines.slice(0, 2).join('; ')}` : ''}`);
+    L.push('');
+  }
+  L.push('---', '', '"Verified" means the checks listed above passed, at the widths and states listed, on the page state tested. It does not cover other pages, other states or other browsers.');
+  return { name: goal, markdown: L.join('\n') + '\n' };
+}
+
+on('exportReport', 'click', async () => {
+  const { name, markdown } = reportMarkdown();
+  try {
+    const r = await bridgeRequest('save_report', { name, markdown }, 5000);
+    setStatus(`Report saved: ${r.saved}`, 'ok');
+    addTrace('pass', 'Report saved in your project', r.saved);
+  } catch {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown' }));
+    a.download = `pixelperfect-report-${new Date().toISOString().slice(0, 10)}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    setStatus('Report downloaded (bridge not connected)', 'ok');
+  }
 });
 
 // After Apply: click again what did nothing (or failed) before, now on the real code.
@@ -964,6 +1160,7 @@ function onStep(s) {
   if (s.kind === 'result' && s.name === 'verify_responsive' && s.result?.byWidth) run.responsive = s.result;
   if (s.kind === 'result' && s.name === 'check_states' && s.result?.results) { run.states = s.result; renderStress(); }
   if (s.kind === 'result' && s.name === 'click_and_watch' && s.result?.summary) {
+    run.lastClickResult = s.result;
     const broken = s.result.errors.length || !(s.result.pageChanged || s.result.navigated || s.result.requests.some((q) => q.level === 'info'));
     if (broken) state.lastClick = lastArgs.click_and_watch || {};
   }

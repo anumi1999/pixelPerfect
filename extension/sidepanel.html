@@ -95,7 +95,10 @@
     <section class="card ask-card">
       <div id="sessionHead" class="card-head" hidden>
         <h2>Session <span id="turnCount" class="hint"></span></h2>
-        <button id="newSession" class="btn ghost small">New session</button>
+        <span class="row-tight">
+          <button id="exportReport" class="btn ghost small" title="Save a report of this run (checks, numbers, diff, what wasn't tested)">Export report</button>
+          <button id="newSession" class="btn ghost small">New session</button>
+        </span>
       </div>
       <ol id="thread" class="thread" hidden></ol>
       <div class="ask-row">
@@ -160,6 +163,15 @@
         <button id="openEditor" class="btn ghost">Open in VS Code</button>
         <button id="undoCode" class="btn ghost danger">Undo code change</button>
       </div>
+    </section>
+
+    <section id="savedCard" class="card" hidden>
+      <div class="card-head">
+        <h2><svg><use href="#i-shield"/></svg>Saved checks <span id="savedCount" class="count"></span></h2>
+        <button id="rerunChecks" class="btn ghost small">Re-run on this page</button>
+      </div>
+      <ul id="savedList" class="stress"></ul>
+      <p class="hint">Every applied fix saves its checks in your project (.pixelperfect/checks.json). Re-run them after any code change to catch a bug coming back.</p>
     </section>
 
     <section id="traceCard" class="card" hidden>

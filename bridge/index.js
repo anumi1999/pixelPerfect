@@ -49,6 +49,19 @@ async function* walk(dir) {
   }
 }
 
+const DOT = () => path.join(ROOT, '.pixelperfect');
+async function readChecks() {
+  try { return JSON.parse(await fs.readFile(path.join(DOT(), 'checks.json'), 'utf8')); }
+  catch (err) { if (err.code === 'ENOENT') return []; throw new Error(`.pixelperfect/checks.json is not valid JSON: ${err.message}`); }
+}
+// Writes only inside <project>/.pixelperfect, never anywhere else.
+async function writeDotFile(rel, content) {
+  const abs = path.resolve(DOT(), rel);
+  if (!abs.startsWith(DOT() + path.sep)) throw new Error('Refused: outside .pixelperfect.');
+  await fs.mkdir(path.dirname(abs), { recursive: true });
+  await fs.writeFile(abs, content, 'utf8');
+}
+
 async function readText(abs) {
   const stat = await fs.stat(abs);
   if (stat.size > MAX_FILE) throw new Error(`${path.relative(ROOT, abs)} is too large (${stat.size} bytes).`);
@@ -87,7 +100,46 @@ function diffPreview(text, find, replace) {
   return out.join('\n');
 }
 
+// Long lines: show each changed piece with a little context, joined by " … ", so two small changes
+// far apart on one minified line don't show everything in between as if it had changed.
 function changedPart(a, b, context = 40) {
+  const split = (t) => t.match(/[A-Za-z0-9_$-]+|\s+|[^A-Za-z0-9_$\s-]/g) || [];
+  const A = split(a), B = split(b);
+  if (A.length * B.length > 4_000_000) return changedPartSimple(a, b, context);
+  // Longest common subsequence of tokens.
+  const n = A.length, m = B.length;
+  const L = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  // Walk it: mark tokens of a and b that changed.
+  const ca = new Array(n).fill(false), cb = new Array(m).fill(false);
+  const insA = new Set(), insB = new Set();   // where the other side inserted something
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { i++; j++; } else if (L[i + 1][j] >= L[i][j + 1]) { insB.add(j); ca[i++] = true; } else { insA.add(i); cb[j++] = true; }
+  }
+  while (i < n) ca[i++] = true;
+  while (j < m) { insA.add(n); cb[j++] = true; }
+  const render = (T, changed, ins) => {
+    const pos = []; let p = 0;
+    for (const t of T) { pos.push(p); p += t.length; }
+    const text = T.join('');
+    const spans = [];
+    const add = (s0, e0) => { const last = spans.at(-1); if (last && s0 - last[1] <= context * 2) last[1] = Math.max(last[1], e0); else spans.push([s0, e0]); };
+    for (let k = 0; k <= T.length; k++) {
+      const at = k < T.length ? pos[k] : text.length;
+      if (ins.has(k)) add(at, at);
+      if (k < T.length && changed[k]) add(at, at + T[k].length);
+    }
+    if (!spans.length) return text.length > 160 ? text.slice(0, 157) + '…' : text;
+    return spans.map(([s0, e0], k) => {
+      const from = Math.max(0, s0 - context), to = Math.min(text.length, e0 + context);
+      return (from > 0 ? '…' : '') + text.slice(from, to) + (to < text.length && k === spans.length - 1 ? '…' : '');
+    }).join('  ');
+  };
+  return [render(A, ca, insA), render(B, cb, insB)];
+}
+
+function changedPartSimple(a, b, context = 40) {
   let p = 0;
   while (p < a.length && p < b.length && a[p] === b[p]) p++;
   let s = 0;
@@ -179,6 +231,38 @@ const actions = {
     history.push({ label, files: [...plan].map(([abs, v]) => ({ abs, content: v.original })) });
     for (const [abs, v] of plan) await fs.writeFile(abs, v.text, 'utf8');
     return { applied: edits.length, files: [...plan.values()].map((v) => v.rel), undoSteps: history.length };
+  },
+
+  // ── Saved checks and reports, kept in <project>/.pixelperfect so they can be committed ──
+  async list_checks() {
+    return { checks: await readChecks(), file: '.pixelperfect/checks.json' };
+  },
+
+  // Saves (or updates, by id) one regression check: what was verified for a fix, to re-run later.
+  async save_checks({ entry }) {
+    if (!entry || typeof entry !== 'object' || !entry.selector || !entry.page) throw new Error('A saved check needs "selector" and "page".');
+    const checks = await readChecks();
+    const id = entry.id || crypto.randomBytes(4).toString('hex');
+    const clean = { ...entry, id, savedAt: new Date().toISOString() };
+    const at = checks.findIndex((c) => c.id === id);
+    if (at >= 0) checks[at] = clean; else checks.push(clean);
+    await writeDotFile('checks.json', JSON.stringify(checks, null, 2) + '\n');
+    return { saved: id, total: checks.length, file: '.pixelperfect/checks.json' };
+  },
+
+  async delete_check({ id }) {
+    const checks = (await readChecks()).filter((c) => c.id !== id);
+    await writeDotFile('checks.json', JSON.stringify(checks, null, 2) + '\n');
+    return { deleted: id, total: checks.length };
+  },
+
+  // Saves a verification report (Markdown) under .pixelperfect/reports/.
+  async save_report({ name, markdown }) {
+    if (typeof markdown !== 'string' || !markdown.trim()) throw new Error('"markdown" is empty.');
+    const slug = String(name || 'report').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'report';
+    const file = `reports/${new Date().toISOString().slice(0, 10)}-${slug}.md`;
+    await writeDotFile(file, markdown);
+    return { saved: `.pixelperfect/${file}` };
   },
 
   async undo() {

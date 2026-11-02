@@ -16,6 +16,17 @@ if (!window.__ppContentLoaded) {
     if (msg.type === 'PP_PICK') { sendBridgeHint(); startPicking(); reply({ ok: true }); return; }
     if (msg.type === 'PP_PREVIEW_MODE') { reply(setPreviewMode(msg.mode)); return; }
     if (msg.type === 'PP_DISCARD') { reply(discardAll()); return; }
+    // Saved checks: select an element by its saved selector, without the picker.
+    if (msg.type === 'PP_SELECT') {
+      let el = null;
+      try { el = document.querySelector(msg.selector); } catch { el = null; }
+      if (!el) { reply({ error: `Not found on this page: ${msg.selector}` }); return; }
+      selection = [el];
+      baseline = globalThis.ppBaseline ? globalThis.ppBaseline(selection) : [];
+      drawMarkers();
+      reply({ element: describe(el) });
+      return;
+    }
     if (msg.type === 'PP_CLEAR_SELECTION') { reply(clearSelection()); return; }
     if (msg.type === 'PP_MARKERS') { markersHidden = !msg.visible; placeMarkers(); reply({ ok: true }); return; }
     if (msg.type === 'PP_ELEMENT_BOX') {
@@ -67,6 +78,7 @@ if (!window.__ppContentLoaded) {
       case 'states_freeze': return globalThis.ppStatesFreeze(!!args.on);
       case 'states_disabled': return globalThis.ppStatesDisabled(args.key, !!args.on);
       case 'states_cleanup': return globalThis.ppStatesCleanup(!!args.keep);
+      case 'stable_selector': return { selector: stableSelector(el) };
       case 'page_errors': return pageLog(0, args.only_errors !== false);
       case 'click_and_watch': return clickAndWatch(el, args);
       case 'stress_scan': return globalThis.ppStressScan
@@ -340,6 +352,29 @@ if (!window.__ppContentLoaded) {
       inlineStyle: el.getAttribute('style') || null,
       rules: found.slice(-limit)
     };
+  }
+
+  // A selector that finds this element again later (for saved checks): an id if it has one,
+  // else a short path of tag + stable classes from the nearest ancestor with an id, made unique with :nth-of-type.
+  function stableSelector(el) {
+    const stable = (c) => c && !/^(css|sc|jsx|emotion|cache)-|[0-9a-f]{6,}|^_/.test(c) && !/\d{3,}/.test(c);
+    const unique = (sel) => { try { return document.querySelectorAll(sel).length === 1; } catch { return false; } };
+    const part = (n) => {
+      if (n.id && !/\d{3,}/.test(n.id)) return `#${CSS.escape(n.id)}`;
+      const cls = [...n.classList].filter(stable).slice(0, 2).map((c) => `.${CSS.escape(c)}`).join('');
+      return n.tagName.toLowerCase() + cls;
+    };
+    const parts = [];
+    for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+      let p = part(n);
+      const sibs = n.parentElement ? [...n.parentElement.children].filter((s) => s.tagName === n.tagName) : [];
+      if (!p.startsWith('#') && sibs.length > 1 && !sibs.every((s) => s === n || !s.matches(p))) p += `:nth-of-type(${sibs.indexOf(n) + 1})`;
+      parts.unshift(p);
+      const sel = parts.join(' > ');
+      if (unique(sel) && (p.startsWith('#') || parts.length >= 1)) return sel;
+      if (p.startsWith('#')) break;
+    }
+    return parts.join(' > ');
   }
 
   // ── Console and network (recorded by page-main.js in the page's own world) ──
