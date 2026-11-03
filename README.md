@@ -1,24 +1,24 @@
-# pixelPerfect
+# Pixel Perfect
 
-**Your frontend quality agent.** My coding agents write the UI. pixelPerfect proves it's right, and fixes it when it isn't.
+**Your frontend quality agent.** My coding agents write the UI. Pixel Perfect proves it's right, and fixes it when it isn't.
 
-pixelPerfect is a Chrome side-panel agent powered by **Muse Spark**. Select what looks wrong on your running app and describe it in plain English. pixelPerfect investigates the live page, finds the root cause, previews a fix, edits your source code, and proves the result with measurements at mobile, tablet and desktop widths.
+Pixel Perfect is a Chrome side-panel agent powered by **Muse Spark**. Select what looks wrong on your running app and describe it in plain English. Pixel Perfect investigates the live page, finds the root cause, previews a fix, edits your source code, and proves the result with measurements at mobile, tablet and desktop widths.
 
 ## Why
 
 AI coding agents can build entire interfaces, but getting the code written isn't the same as getting the interface right. In the [Stack Overflow 2025 Developer Survey](https://survey.stackoverflow.co/2025/), 84% of developers use or plan to use AI tools, only 33% trust its accuracy, and 66% name "AI solutions that are almost right, but not quite" as their top frustration.
 
-In UI, "almost right" means 9px padding instead of 17px, a card that breaks with a long name, or a button a keyboard can't reach. Finding these still means opening the browser, inspecting CSS, finding what's broken, going back to the agent, and repeating. I built pixelPerfect to close that loop.
+In UI, "almost right" means 9px padding instead of 17px, a card that breaks with a long name, or a button a keyboard can't reach. Finding these still means opening the browser, inspecting CSS, finding what's broken, going back to the agent, and repeating. I built Pixel Perfect to close that loop.
 
 ## Features
 
 ### Fix: inspect → explain → fix → verify
-1. **Root cause.** Pick an element (Shift+click for several, ↑ for the whole block), describe the problem, and pixelPerfect names the CSS rule that wins, with its file and line.
+1. **Root cause.** Pick an element (Shift+click for several, ↑ for the whole block), describe the problem, and Pixel Perfect names the CSS rule that wins, with its file and line.
 2. **Live preview.** The fix is applied on the page first, with a Before/After view and an Original/Changes toggle.
 3. **Verified with numbers.** Checks are measured on the page: CSS values, centered, size, spacing, aligned, visible, no overflow, contrast and line count.
 4. **Responsive.** The fix is re-measured at 375, 768 and 1280px.
-5. **Apply and re-check.** The local bridge writes the source edit, then pixelPerfect re-runs the same checks on the real code. Open in VS Code, or undo.
-6. **Copy CSS.** For pages where pixelPerfect can't write code.
+5. **Apply and re-check.** The local bridge writes the source edit, then Pixel Perfect re-runs the same checks on the real code. Open in VS Code, or undo.
+6. **Copy CSS.** For pages where Pixel Perfect can't write code.
 
 ### Test: beyond the happy path
 7. **Figma match.** Finds the matching frame in your Figma file and turns its values into acceptance checks.
@@ -36,8 +36,8 @@ In UI, "almost right" means 9px padding instead of 17px, a card that breaks with
 
 ### Remember: beyond one session
 17. **Sessions.** Follow-ups keep context ("only on this card", "a bit darker"). Sessions are saved per page and resume when you return.
-18. **Shareable report.** A markdown report with the request, cause, checks (expected vs measured), widths, break tests, behaviour and diff, saved to `.pixelperfect/reports/`.
-19. **Regression checks.** Every verified Apply saves its checks to `.pixelperfect/checks.json`. **Re-run on this page** flags anything that has come back as **REGRESSED**, with the numbers.
+18. **Shareable report.** A markdown report with the request, cause, checks (expected vs measured), widths, break tests, behaviour and diff, saved to `.Pixel Perfect/reports/`.
+19. **Regression checks.** Every verified Apply saves its checks to `.Pixel Perfect/checks.json`. **Re-run on this page** flags anything that has come back as **REGRESSED**, with the numbers.
 
 ## Quick start
 
@@ -54,10 +54,10 @@ cd /path/to/your/project && npm run dev        # e.g. http://localhost:5173
 node bridge/index.js /path/to/your/project
 ```
 
-The bridge prints a pairing token and saves it in `~/.pixelperfect/bridge-token`, so it stays the same every time.
+The bridge prints a pairing token and saves it in `~/.Pixel Perfect/bridge-token`, so it stays the same every time.
 
 4. In Chrome, open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and choose the `extension/` folder.
-5. Open the pixelPerfect side panel, then **Settings**:
+5. Open the Pixel Perfect side panel, then **Settings**:
    - **Meta API key, model and base URL** for Muse Spark.
    - **Bridge token** (first time only).
    - Optional: a **Figma link and personal access token**, then **Load design**.
@@ -75,8 +75,8 @@ The bug list is in `demo-app/BUGS.md`, which the bridge never opens, so the agen
 
 **Tips**
 - Run your app on its **dev server**. A production build hides source files behind hashed bundles.
-- After replacing extension files, click **Reload** on pixelPerfect in `chrome://extensions` and reload the tab. If the panel shows a red bar, it's running old files.
-- Optional, Vite + React only: `ppSourceBabel` (in `vite-plugin/`) tags each element with its exact file and line in dev builds. It isn't needed, because pixelPerfect also finds sources through stylesheet paths, React component locations and search.
+- After replacing extension files, click **Reload** on Pixel Perfect in `chrome://extensions` and reload the tab. If the panel shows a red bar, it's running old files.
+- Optional, Vite + React only: `ppSourceBabel` (in `vite-plugin/`) tags each element with its exact file and line in dev builds. It isn't needed, because Pixel Perfect also finds sources through stylesheet paths, React component locations and search.
 
 ## Using it
 
@@ -93,13 +93,13 @@ The bug list is in `demo-app/BUGS.md`, which the bridge never opens, so the agen
 
 ## What "verified" means
 
-The checks listed in the result passed, at the screen widths and states listed, on the page state that was tested. It does not prove the whole app is correct. Other pages, states and browsers are not covered, and pixelPerfect lists what it did not test.
+The checks listed in the result passed, at the screen widths and states listed, on the page state that was tested. It does not prove the whole app is correct. Other pages, states and browsers are not covered, and Pixel Perfect lists what it did not test.
 
 ## How it works
 
 ```
  Your page  ⇄  Side panel agent  ⇄  Local bridge  ⇄  Your source files
- (measure,     (Muse Spark picks     (127.0.0.1, token,    (.pixelperfect/
+ (measure,     (Muse Spark picks     (127.0.0.1, token,    (.Pixel Perfect/
   preview,      the next tool;        project folder only)   checks, reports)
   stress)       guardrails in code)
 ```
@@ -125,18 +125,16 @@ The checks listed in the result passed, at the screen widths and states listed, 
 
 ## Privacy and safety
 
-- The **bridge** listens on 127.0.0.1 only, refuses connections that aren't from a Chrome extension, and requires the pairing token. It only reads and writes inside the project folder you gave it (never `node_modules`, `.git` or `dist`). Every write can be undone. pixelPerfect's own files go only in `.pixelperfect/`.
+- The **bridge** listens on 127.0.0.1 only, refuses connections that aren't from a Chrome extension, and requires the pairing token. It only reads and writes inside the project folder you gave it (never `node_modules`, `.git` or `dist`). Every write can be undone. Pixel Perfect's own files go only in `.Pixel Perfect/`.
 - **What goes to the model:** page measurements, CSS rules, and the source snippets the agent asks to read are sent to the Meta Model API (Muse Spark). Your files are never uploaded as a whole.
 - Code is never written for pages that aren't your local project.
-- Add `.pixelperfect/reports/` to `.gitignore` if you don't want reports in your repo. You may want to commit `checks.json`, so your regression checks travel with the code.
+- Add `.Pixel Perfect/reports/` to `.gitignore` if you don't want reports in your repo. You may want to commit `checks.json`, so your regression checks travel with the code.
 
 ## Known limitations
 
 - Tested mainly on React + Vite with plain CSS. Tailwind, CSS-in-JS and other frameworks may work, but are less tested.
-- Figma's free plan limits file reads to a small number per month. pixelPerfect caches the design after the first load.
-- To record errors from page load, pixelPerfect wraps `console.error` on local pages. Chrome then lists your app's own errors under the extension's **Errors** button in `chrome://extensions`. That's expected.
-- The Chrome debugger banner ("pixelPerfect started debugging this browser") appears while it measures widths or forces states.
-- **Local mode** (an open-weights model through llama.cpp) is experimental and wasn't part of the tested demo.
+- Figma's free plan limits file reads to a small number per month. Pixel Perfect caches the design after the first load.
+- The Chrome debugger banner ("Pixel Perfect started debugging this browser") appears while it measures widths or forces states.
 
 ## Dev log: what didn't work, and the fixes
 

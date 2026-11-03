@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "pixelPerfect",
+  "name": "Pixel Perfect",
   "version": "0.1.0",
   "description": "An AI agent that inspects your running app, fixes UI issues, and verifies its own work.",
   "permissions": [
@@ -23,7 +23,7 @@
     "default_path": "sidepanel.html"
   },
   "action": {
-    "default_title": "Open pixelPerfect"
+    "default_title": "Open Pixel Perfect"
   },
   "content_scripts": [
     {
