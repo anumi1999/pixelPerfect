@@ -2,9 +2,9 @@
 
 **Your frontend quality agent.** My coding agents write the UI. Pixel Perfect proves it's right, and fixes it when it isn't.
 
-[![Watch the 3-minute demo](docs/images/hero.png)](VIDEO_LINK)
+[![Watch the 3-minute demo](docs/images/hero.png)]([VIDEO_LINK](https://youtu.be/iDrMUnD3quk))
 
-▶️ **[Watch the 3-minute demo](https://youtu.be/9Kr0eDziRRw)**
+▶️ **[Watch the 3-minute demo](https://youtu.be/iDrMUnD3quk)**
 
 Pixel Perfect is a Chrome side-panel agent powered by **Muse Spark** through the Meta Model API. Select what looks wrong on your running app and describe it in plain English. Pixel Perfect investigates the live page, finds the root cause, previews a fix, edits your source code, and proves the result with measurements at mobile, tablet and desktop widths.
 
