@@ -1,0 +1,78 @@
+[
+  {
+    "title": "yes",
+    "page": "/",
+    "selector": "button.primary-button",
+    "checks": [
+      {
+        "type": "visible",
+        "element": 0
+      }
+    ],
+    "widths": null,
+    "stress": null,
+    "click": {
+      "target": null
+    },
+    "files": [
+      "src/App.jsx"
+    ],
+    "id": "8b3799d5",
+    "savedAt": "2026-11-03T19:25:52.933Z"
+  },
+  {
+    "title": "yes",
+    "page": "/",
+    "selector": "button.primary-button",
+    "checks": null,
+    "widths": null,
+    "stress": null,
+    "click": {
+      "target": null
+    },
+    "files": [
+      "src/App.jsx"
+    ],
+    "id": "9905a381",
+    "savedAt": "2026-11-03T19:28:16.502Z"
+  },
+  {
+    "title": "fix it",
+    "page": "/",
+    "selector": "section.panel.campaign-panel",
+    "checks": [
+      {
+        "type": "css",
+        "property": "padding-left",
+        "expected": "17px"
+      },
+      {
+        "type": "css",
+        "property": "padding-right",
+        "expected": "17px"
+      },
+      {
+        "type": "css",
+        "property": "padding-top",
+        "expected": "17px"
+      },
+      {
+        "type": "css",
+        "property": "border-radius",
+        "expected": "11px"
+      }
+    ],
+    "widths": [
+      375,
+      768,
+      1280
+    ],
+    "stress": null,
+    "click": null,
+    "files": [
+      "src/styles.css"
+    ],
+    "id": "f1460af1",
+    "savedAt": "2026-11-03T19:39:17.141Z"
+  }
+]
