@@ -4,7 +4,7 @@
 
 [![Watch the 3-minute demo](docs/images/hero.png)](VIDEO_LINK)
 
-▶️ **[Watch the 3-minute demo](VIDEO_LINK)**
+▶️ **[Watch the 3-minute demo](https://youtu.be/9Kr0eDziRRw)**
 
 Pixel Perfect is a Chrome side-panel agent powered by **Muse Spark** through the Meta Model API. Select what looks wrong on your running app and describe it in plain English. Pixel Perfect investigates the live page, finds the root cause, previews a fix, edits your source code, and proves the result with measurements at mobile, tablet and desktop widths.
 
