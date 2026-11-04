@@ -107,7 +107,7 @@ const activity = [
     detail: "Retargeting campaign · 3 hrs ago",
   },
 ];
-console.error('test load error')
+
 function Sidebar({ open, setOpen }) {
   return (
     <>
