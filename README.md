@@ -2,7 +2,13 @@
 
 **Your frontend quality agent.** My coding agents write the UI. Pixel Perfect proves it's right, and fixes it when it isn't.
 
-Pixel Perfect is a Chrome side-panel agent powered by **Muse Spark**. Select what looks wrong on your running app and describe it in plain English. Pixel Perfect investigates the live page, finds the root cause, previews a fix, edits your source code, and proves the result with measurements at mobile, tablet and desktop widths.
+[![Watch the 3-minute demo](docs/images/hero.png)](VIDEO_LINK)
+
+▶️ **[Watch the 3-minute demo](VIDEO_LINK)**
+
+Pixel Perfect is a Chrome side-panel agent powered by **Muse Spark** through the Meta Model API. Select what looks wrong on your running app and describe it in plain English. Pixel Perfect investigates the live page, finds the root cause, previews a fix, edits your source code, and proves the result with measurements at mobile, tablet and desktop widths.
+
+<p align="center"><img src="docs/images/fix-flow.gif" width="800" alt="Pixel Perfect previews a padding fix, verifies 5 of 5 checks at three screen widths, applies it to the code and saves a regression check"></p>
 
 ## Why
 
@@ -20,6 +26,17 @@ In UI, "almost right" means 9px padding instead of 17px, a card that breaks with
 5. **Apply and re-check.** The local bridge writes the source edit, then Pixel Perfect re-runs the same checks on the real code. Open in VS Code, or undo.
 6. **Copy CSS.** For pages where Pixel Perfect can't write code.
 
+<table>
+<tr>
+<td width="50%"><img src="docs/images/root-cause.jpg" alt="Root cause: an override at styles.css line 4"><br><b>Root cause:</b> the override at <code>styles.css</code>, line 4</td>
+<td width="50%"><img src="docs/images/verified.jpg" alt="Live preview with 5 of 5 checks passing"><br><b>Preview, then measure:</b> 5 of 5 checks at 375, 768 and 1280px</td>
+</tr>
+<tr>
+<td><img src="docs/images/applied.jpg" alt="Applied to code and saved as a regression check"><br><b>Applied and re-checked</b> on the real code, then saved as a regression check</td>
+<td><img src="docs/images/vs-code.jpg" alt="The new code in VS Code"><br><b>The change is in your code,</b> and every edit can be undone</td>
+</tr>
+</table>
+
 ### Test: beyond the happy path
 7. **Figma match.** Finds the matching frame in your Figma file and turns its values into acceptance checks.
 8. **Break it.** Attacks the selected block with long text, long words, huge numbers, empty data, many items, big font, narrow screens and right-to-left. It reports what broke, by how many pixels, and which rule causes it.
@@ -27,6 +44,21 @@ In UI, "almost right" means 9px padding instead of 17px, a card that breaks with
 10. **Click and watch.** Clicks a button and reports what happened: DOM changes, errors, network calls, or nothing. Risky clicks (delete, pay, send, log out…) are refused.
 11. **Page errors.** Console errors, failed requests and unhandled rejections, including those from before the panel was opened, with the file and line in your own code.
 12. **Approval for behaviour.** Before adding new behaviour, such as a click handler, it asks you first. After Apply, it clicks again to confirm.
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/figma-checks.jpg" alt="Figma frame matched at 0.97, 25 of 25 design checks pass"><br><b>Figma match:</b> frame score 0.97, 25 of 25 design values pass</td>
+<td width="50%"><img src="docs/images/break-it.jpg" alt="Break it results"><br><b>Break it:</b> 4 attacks broke this block, each measured with its cause</td>
+</tr>
+<tr>
+<td><img src="docs/images/states.jpg" alt="Interaction state results"><br><b>States:</b> the × button has no name a screen reader can read</td>
+<td><img src="docs/images/approval.jpg" alt="Pixel Perfect asking for approval"><br><b>Approval first:</b> no click handler found, so it asks what the button should do</td>
+</tr>
+<tr>
+<td><img src="docs/images/page-errors.jpg" alt="Answer listing a console error"><br><b>Questions get answers:</b> a console error from page load, nothing changed</td>
+<td><img src="docs/images/live-site.jpg" alt="Preview on a live production site"><br><b>In production:</b> preview and Copy CSS only on sites that aren't yours</td>
+</tr>
+</table>
 
 ### Trust: guardrails enforced in code
 13. **Live-site guard.** On sites that aren't your local project, it previews only and never writes code.
@@ -36,8 +68,10 @@ In UI, "almost right" means 9px padding instead of 17px, a card that breaks with
 
 ### Remember: beyond one session
 17. **Sessions.** Follow-ups keep context ("only on this card", "a bit darker"). Sessions are saved per page and resume when you return.
-18. **Shareable report.** A markdown report with the request, cause, checks (expected vs measured), widths, break tests, behaviour and diff, saved to `.Pixel Perfect/reports/`.
-19. **Regression checks.** Every verified Apply saves its checks to `.Pixel Perfect/checks.json`. **Re-run on this page** flags anything that has come back as **REGRESSED**, with the numbers.
+18. **Shareable report.** A markdown report with the request, cause, checks (expected vs measured), widths, break tests, behaviour and diff, saved to `.pixelperfect/reports/`.
+19. **Regression checks.** Every verified Apply saves its checks to `.pixelperfect/checks.json`. **Re-run on this page** flags anything that has come back as **REGRESSED**, with the numbers.
+
+<p align="center"><img src="docs/images/regressed.jpg" width="800" alt="Saved checks re-run: REGRESSED, expected 17px, measured 9px"><br><b>The bug came back,</b> and one click caught it: expected 17px, measured 9px</p>
 
 ## Quick start
 
@@ -54,7 +88,7 @@ cd /path/to/your/project && npm run dev        # e.g. http://localhost:5173
 node bridge/index.js /path/to/your/project
 ```
 
-The bridge prints a pairing token and saves it in `~/.Pixel Perfect/bridge-token`, so it stays the same every time.
+The bridge prints a pairing token and saves it in `~/.pixelperfect/bridge-token`, so it stays the same every time.
 
 4. In Chrome, open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and choose the `extension/` folder.
 5. Open the Pixel Perfect side panel, then **Settings**:
@@ -63,6 +97,13 @@ The bridge prints a pairing token and saves it in `~/.Pixel Perfect/bridge-token
    - Optional: a **Figma link and personal access token**, then **Load design**.
    - Click **Save**, then **Test current mode**.
 6. Open your app, click **Pick elements**, pick what looks wrong, and describe it.
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/local-mode.jpg" alt="Settings: model mode and Muse Spark"><br><b>Settings:</b> Muse Spark (cloud), or local mode for open-weights models</td>
+<td width="50%"><img src="docs/images/setup.jpg" alt="Settings: bridge and Figma"><br><b>Bridge and Figma:</b> pair the bridge once, add a Figma link</td>
+</tr>
+</table>
 
 To try it without your own project, a demo shop with planted bugs is included:
 
@@ -99,7 +140,7 @@ The checks listed in the result passed, at the screen widths and states listed, 
 
 ```
  Your page  ⇄  Side panel agent  ⇄  Local bridge  ⇄  Your source files
- (measure,     (Muse Spark picks     (127.0.0.1, token,    (.Pixel Perfect/
+ (measure,     (Muse Spark picks     (127.0.0.1, token,    (.pixelperfect/
   preview,      the next tool;        project folder only)   checks, reports)
   stress)       guardrails in code)
 ```
@@ -125,16 +166,18 @@ The checks listed in the result passed, at the screen widths and states listed, 
 
 ## Privacy and safety
 
-- The **bridge** listens on 127.0.0.1 only, refuses connections that aren't from a Chrome extension, and requires the pairing token. It only reads and writes inside the project folder you gave it (never `node_modules`, `.git` or `dist`). Every write can be undone. Pixel Perfect's own files go only in `.Pixel Perfect/`.
+- The **bridge** listens on 127.0.0.1 only, refuses connections that aren't from a Chrome extension, and requires the pairing token. It only reads and writes inside the project folder you gave it (never `node_modules`, `.git` or `dist`). Every write can be undone. Pixel Perfect's own files go only in `.pixelperfect/`.
 - **What goes to the model:** page measurements, CSS rules, and the source snippets the agent asks to read are sent to the Meta Model API (Muse Spark). Your files are never uploaded as a whole.
 - Code is never written for pages that aren't your local project.
-- Add `.Pixel Perfect/reports/` to `.gitignore` if you don't want reports in your repo. You may want to commit `checks.json`, so your regression checks travel with the code.
+- Add `.pixelperfect/reports/` to `.gitignore` if you don't want reports in your repo. You may want to commit `checks.json`, so your regression checks travel with the code.
 
 ## Known limitations
 
 - Tested mainly on React + Vite with plain CSS. Tailwind, CSS-in-JS and other frameworks may work, but are less tested.
 - Figma's free plan limits file reads to a small number per month. Pixel Perfect caches the design after the first load.
+- To record errors from page load, Pixel Perfect wraps `console.error` on local pages. Chrome then lists your app's own errors under the extension's **Errors** button in `chrome://extensions`. That's expected.
 - The Chrome debugger banner ("Pixel Perfect started debugging this browser") appears while it measures widths or forces states.
+- **Local mode** (open-weights models through any OpenAI-compatible local server, such as Ollama or llama.cpp) is experimental and wasn't part of the tested demo.
 
 ## Dev log: what didn't work, and the fixes
 
@@ -158,3 +201,7 @@ The checks listed in the result passed, at the screen widths and states listed, 
 - Better support for Tailwind, CSS-in-JS, Vue and Svelte.
 - Muse Spark vision to confirm Figma matches visually.
 - A tested local model mode for code that can't leave the machine.
+
+## About
+
+Built for the **Meta Global AI Developer Hackathon** (Oct 27 – Nov 4, 2026). Inspired by my earlier prototype, Fixel v0.2. All code in this repository is new and was written during the hackathon.
