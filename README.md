@@ -171,15 +171,7 @@ The checks listed in the result passed, at the screen widths and states listed, 
 - Code is never written for pages that aren't your local project.
 - Add `.pixelperfect/reports/` to `.gitignore` if you don't want reports in your repo. You may want to commit `checks.json`, so your regression checks travel with the code.
 
-## Known limitations
-
-- Tested mainly on React + Vite with plain CSS. Tailwind, CSS-in-JS and other frameworks may work, but are less tested.
-- Figma's free plan limits file reads to a small number per month. Pixel Perfect caches the design after the first load.
-- To record errors from page load, Pixel Perfect wraps `console.error` on local pages. Chrome then lists your app's own errors under the extension's **Errors** button in `chrome://extensions`. That's expected.
-- The Chrome debugger banner ("Pixel Perfect started debugging this browser") appears while it measures widths or forces states.
-- **Local mode** (open-weights models through any OpenAI-compatible local server, such as Ollama or llama.cpp) is experimental and wasn't part of the tested demo.
-
-## Dev log: what didn't work, and the fixes
+## Dev log: what didn't work, and their fixes
 
 - **The agent wrote Netflix's CSS into my demo app.** A preview on a live site was proposed as a source edit. Fix: the live-site guard. Code is only written for local projects.
 - **The agent moved the goalposts.** When a fix failed a check, it changed the check. Fix: the first failing checks are locked, and dropping or changing one is refused.
@@ -198,9 +190,7 @@ The checks listed in the result passed, at the screen widths and states listed, 
 ## Roadmap
 
 - Run saved checks in CI on every pull request.
-- Better support for Tailwind, CSS-in-JS, Vue and Svelte.
 - Muse Spark vision to confirm Figma matches visually.
-- A tested local model mode for code that can't leave the machine.
 
 ## About
 
